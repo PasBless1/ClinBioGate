@@ -3,6 +3,7 @@ data/raw/
 data/processed/
 data/manifests/*.parquet
 data/manifests/*.csv
+data/manifests/splits/
 !data/manifests/.gitkeep
 
 # ---- Experiment outputs ----

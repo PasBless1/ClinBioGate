@@ -1,0 +1,139 @@
+# Canonical label schema for the OLIVES Hugging Face parquet mirror
+# (gOLIVES/OLIVES_Dataset).  Source column names are verbatim from the parquet
+# schema and MUST NOT be edited to "tidy" them -- the audit validates against them.
+
+source:
+  # Which HF config each column group comes from.
+  disease_classification:
+    identifier_columns:
+      patient_id: "Patient_ID"
+      eye_id: "Eye_ID"
+      scan_number: "Scan (n/49)"
+    clinical_columns:
+      bcva: "BCVA"
+      cst: "CST"
+    disease_column: "Disease Label"
+    image_column: "Image"
+  biomarker_detection:
+    identifier_columns:
+      patient_id: "Patient_ID"
+      eye_id: "Eye_ID"
+    clinical_columns:
+      bcva: "BCVA"
+      cst: "CST"
+    image_column: "Image"
+
+# Disease label encoding, per the official dataset card.
+disease_label_map:
+  0: DR    # Diabetic Retinopathy   (PRIME trial)
+  1: DME   # Diabetic Macular Edema (TREX-DME trial)
+
+# ---------------------------------------------------------------------------
+# 16-label target set (config: disease_classification)
+# ---------------------------------------------------------------------------
+sixteen:
+  atrophy_thinning:
+    source: "Atrophy / thinning of retinal layers"
+    display: "Atrophy / thinning of retinal layers"
+  ez_disruption:
+    source: "Disruption of EZ"
+    display: "Disruption of ellipsoid zone (EZ)"
+  dril:
+    source: "DRIL"
+    display: "Disorganization of retinal inner layers (DRIL)"
+  ir_hemorrhages:
+    source: "IR hemorrhages"
+    display: "Intraretinal haemorrhages"
+  irhrf:
+    source: "IR HRF"
+    display: "Intraretinal hyperreflective foci (IRHRF)"
+  pavf:
+    source: "Partially attached vitreous face"
+    display: "Partially attached vitreous face (PAVF)"
+  favf:
+    source: "Fully attached vitreous face"
+    display: "Fully attached vitreous face (FAVF)"
+  preretinal_tissue:
+    source: "Preretinal tissue/hemorrhage"
+    display: "Preretinal tissue / haemorrhage"
+  vitreous_debris:
+    source: "Vitreous debris"
+    display: "Vitreous debris (VD)"
+  vmt:
+    source: "VMT"
+    display: "Vitreomacular traction (VMT)"
+  drt_me:
+    source: "DRT/ME"
+    display: "Diffuse retinal thickening / macular oedema (DRT/ME)"
+  irf:
+    source: "Fluid (IRF)"
+    display: "Intraretinal fluid (IRF)"
+  srf:
+    source: "Fluid (SRF)"
+    display: "Subretinal fluid (SRF)"
+  rpe_disruption:
+    source: "Disruption of RPE"
+    display: "Disruption of retinal pigment epithelium (RPE)"
+  ped_serous:
+    source: "PED (serous)"
+    display: "Serous pigment epithelial detachment (PED)"
+  shrm:
+    source: "SHRM"
+    display: "Subretinal hyperreflective material (SHRM)"
+
+# ---------------------------------------------------------------------------
+# 6-label MVP target set.
+#
+# Two provenances exist and they are NOT interchangeable:
+#   * from_disease_classification -> the same 6 concepts drawn from the 16-label
+#     columns, so it stays inside our own patient-grouped split.
+#   * from_biomarker_detection    -> the VIP-Cup B1..B6 columns shipped with the
+#     dataset's own train/test split.  That test split contains ONE patient, so it
+#     is unusable for patient-level bootstrap CIs.  Kept for reproducing the
+#     challenge only.
+# ---------------------------------------------------------------------------
+six:
+  irhrf:
+    source: "IR HRF"
+    vip_cup_code: "B1"
+    display: "Intraretinal hyperreflective foci (IRHRF)"
+  pavf:
+    source: "Partially attached vitreous face"
+    vip_cup_code: "B2"
+    display: "Partially attached vitreous face (PAVF)"
+  favf:
+    source: "Fully attached vitreous face"
+    vip_cup_code: "B3"
+    display: "Fully attached vitreous face (FAVF)"
+  irf:
+    source: "Fluid (IRF)"
+    vip_cup_code: "B4"
+    display: "Intraretinal fluid (IRF)"
+  drt_me:
+    source: "DRT/ME"
+    vip_cup_code: "B5"
+    display: "Diffuse retinal thickening / macular oedema (DRT/ME)"
+  vitreous_debris:
+    source: "Vitreous debris"
+    vip_cup_code: "B6"
+    display: "Vitreous debris (VD)"
+
+# Fields the PROJECT BRIEF expects but which are ABSENT from this data source.
+# The audit reports these as unresolved rather than silently inventing them.
+unresolved_fields:
+  visit_id_or_week:
+    status: absent
+    note: >
+      The HF mirror carries no visit/week column, and Scan (n/49) is populated
+      only on biomarker-annotated visits (~22% of rows). Visit blocks are INFERRED
+      within each (patient, eye) from BCVA/CST change-points, capped at 49 scans
+      per volume. Inferred, never authoritative.
+  fundus_image:
+    status: absent
+    note: "No near-IR fundus images in this mirror. Fundus extension is blocked."
+  oct_volume_npy:
+    status: absent
+    note: "No stitched 3D volumes. Volume-level modelling is blocked."
+  extended_clinical:
+    status: absent
+    note: "DRSS, BMI, age, race, gender, HbA1c, leakage index, injection arm are not present."

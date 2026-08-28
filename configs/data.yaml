@@ -1,0 +1,39 @@
+project:
+  name: olives_multimodal_biomarkers
+  seed: 42
+
+data:
+  # Path resolution order: explicit override -> Colab Drive -> repo-relative.
+  source: local_parquet          # local_parquet | hf_hub
+  root: data/raw/OLIVES
+  hf_repo_id: gOLIVES/OLIVES_Dataset
+  config_name: disease_classification   # disease_classification | biomarker_detection
+  label_schema: configs/label_schema.yaml
+  manifest_dir: data/manifests
+  target_set: sixteen            # six | sixteen
+  group_key: patient_id
+  image_size: [224, 224]
+  num_workers: 4
+
+  colab:
+    drive_mount: /content/drive
+    drive_data_subpath: MyDrive/olives/data/raw/OLIVES
+
+manifest:
+  compute_image_hashes: true     # one full pass over image bytes (~85 s per config)
+  hash_digest_size: 12
+  biomarker_labelled_only: false # keep every row; downstream filters on has_biomarkers
+
+split:
+  strategy: grouped_holdout      # grouped_holdout | grouped_kfold
+  train_fraction: 0.70
+  val_fraction: 0.15
+  test_fraction: 0.15
+  calibration_fraction_of_train: 0.15
+  n_folds: 5
+  stratify_on: disease_label
+  seed: 42
+
+duplicates:
+  policy: keep_first             # keep_first | keep_all | drop_all
+  block_cross_partition: true

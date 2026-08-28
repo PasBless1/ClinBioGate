@@ -1,0 +1,31 @@
+defaults: configs/data.yaml
+
+experiment:
+  name: baseline_oct
+  description: "Model B - OCT-only ResNet-18 multilabel baseline"
+
+model:
+  name: oct_only
+  image_encoder: resnet18
+  pretrained: true
+  image_embedding_dim: 256
+  dropout: 0.30
+
+training:
+  epochs: 50
+  batch_size: 32
+  learning_rate: 0.0001
+  weight_decay: 0.0001
+  early_stopping_patience: 8
+  monitor: val_macro_auprc
+  monitor_mode: max
+  amp: true
+  pos_weight: from_train_fold
+  pos_weight_cap: 20.0
+
+uncertainty:
+  mc_dropout_passes: 30
+
+evaluation:
+  bootstrap_iterations: 1000
+  threshold_strategy: per_label_validation_f1

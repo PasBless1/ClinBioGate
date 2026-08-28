@@ -1,0 +1,22 @@
+# Full training budget, intended for a Colab GPU runtime.
+#
+# Point data.root at the uploaded image cache (data/processed/images_labelled)
+# plus the manifest; the 30 GB of parquet is not needed once the cache exists.
+defaults: configs/data.yaml
+
+data:
+  image_size: [224, 224]
+  num_workers: 2
+
+training:
+  epochs: 50
+  batch_size: 32
+  learning_rate: 0.0001
+  early_stopping_patience: 8
+  amp: true
+
+uncertainty:
+  mc_dropout_passes: 30
+
+evaluation:
+  bootstrap_iterations: 1000

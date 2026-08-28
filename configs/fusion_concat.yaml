@@ -1,0 +1,35 @@
+defaults: configs/data.yaml
+
+experiment:
+  name: fusion_concat
+  description: "Model C - OCT + clinical feature concatenation"
+
+model:
+  name: concat_fusion
+  image_encoder: resnet18
+  pretrained: true
+  image_embedding_dim: 256
+  clinical_features: [bcva, cst]
+  use_missingness_indicators: true
+  clinical_embedding_dim: 32
+  clinical_hidden_dims: [64, 32]
+  dropout: 0.30
+
+training:
+  epochs: 50
+  batch_size: 32
+  learning_rate: 0.0001
+  weight_decay: 0.0001
+  early_stopping_patience: 8
+  monitor: val_macro_auprc
+  monitor_mode: max
+  amp: true
+  pos_weight: from_train_fold
+  pos_weight_cap: 20.0
+
+uncertainty:
+  mc_dropout_passes: 30
+
+evaluation:
+  bootstrap_iterations: 1000
+  threshold_strategy: per_label_validation_f1

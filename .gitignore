@@ -1,0 +1,43 @@
+# ---- Data: never commit patient data or raw imagery ----
+data/raw/
+data/processed/
+data/manifests/*.parquet
+data/manifests/*.csv
+!data/manifests/.gitkeep
+
+# ---- Experiment outputs ----
+outputs/
+mlruns/
+wandb/
+*.ckpt
+*.pt
+*.pth
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# ---- Notebooks ----
+.ipynb_checkpoints/
+
+# ---- Editors / OS ----
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# ---- Secrets ----
+.env
+*.key
+credentials.json

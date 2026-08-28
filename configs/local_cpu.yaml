@@ -1,0 +1,24 @@
+# Reduced budget for CPU-only local runs.
+#
+# This exists so the pipeline can be exercised end to end without a GPU. It is a
+# wiring and plumbing check, NOT the headline experiment: 128px inputs and a
+# short schedule will understate every model. Use configs/colab_gpu.yaml (or the
+# per-model configs unchanged) for results that go in the report.
+defaults: configs/data.yaml
+
+data:
+  image_size: [128, 128]
+  num_workers: 4
+
+training:
+  epochs: 8
+  batch_size: 32
+  learning_rate: 0.0003
+  early_stopping_patience: 3
+  amp: false
+
+uncertainty:
+  mc_dropout_passes: 20
+
+evaluation:
+  bootstrap_iterations: 400

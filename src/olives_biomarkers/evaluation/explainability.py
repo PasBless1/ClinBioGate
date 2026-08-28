@@ -200,8 +200,17 @@ class AttentionSanityChecker:
 
     def background_mass(self, heatmap: np.ndarray, image: np.ndarray) -> float:
         """Fraction of activation over near-black (non-tissue) pixels."""
+        image = np.asarray(image)
         if image.ndim == 3:
-            image = image.mean(axis=0)
+            channel_axis = 0 if image.shape[0] in {1, 3, 4} else -1
+            image = image.mean(axis=channel_axis)
+        if image.ndim != 2:
+            raise ValueError(f'image must be 2D or 3D, got shape {image.shape}')
+        if image.shape != heatmap.shape:
+            resized = torch.as_tensor(image, dtype=torch.float32)[None, None]
+            image = torch.nn.functional.interpolate(
+                resized, size=heatmap.shape, mode='bilinear', align_corners=False
+            )[0, 0].numpy()
         normalized = (image - image.min()) / max(image.max() - image.min(), 1e-8)
         background = normalized < self.intensity_threshold
         total = heatmap.sum()

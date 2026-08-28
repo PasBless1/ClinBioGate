@@ -4,7 +4,7 @@ Multilabel detection of retinal biomarkers from OCT B-scans on the **OLIVES** da
 scan with the clinical measurements recorded at the same visit (BCVA, CST), with calibrated
 probabilities, uncertainty estimates and per-label explanations.
 
-**Owner:** Blessing Asare · **Framework:** PyTorch · **Status:** Phases 0–5 implemented; headline numbers pending a GPU run
+**Owner:** Blessing Asare · **Framework:** PyTorch · **Status:** Phases 0–5 executed on an NVIDIA A100; the proposed gated fusion did not outperform the OCT-only baseline
 
 ---
 
@@ -18,6 +18,65 @@ A rigorous negative result — clinical fusion failing to beat a well-controlled
 legitimate and useful outcome. The evaluation is built so that outcome would be believable.
 
 ---
+
+## A100 results
+
+Models were evaluated across seeds 42, 43 and 44 on one fixed patient-grouped holdout:
+52 training, 13 validation, 9 calibration and 13 test patients (1,372 test scans). Thresholds
+were fitted on validation only. Macro metrics omit the three labels with no positive test
+examples (DRIL, VMT and serous PED).
+
+| Model | Macro F1 | Macro AUROC | Macro AUPRC |
+|---|---:|---:|---:|
+| Clinical only | 0.3644 | 0.6500 | 0.3541 |
+| OCT only | **0.5026** | 0.8522 | 0.5478 |
+| Concatenation | 0.4971 | **0.8660** | **0.5492** |
+| Gated fusion | 0.4979 | 0.8551 | 0.5413 |
+
+OCT clearly outperformed BCVA+CST alone. Concatenation was effectively tied with OCT, while
+gated fusion was lower by 0.0065 macro AUPRC and 0.0047 macro F1. The proposed gate therefore
+did not improve the primary endpoint on this cohort. This is a negative model result, not a
+pipeline failure.
+
+![Three-seed model comparison](assets/readme/02_model_comparison.png)
+
+### Gate mechanism
+
+The gate responded to the intended clinical signal: its Spearman correlation was 0.8768 with
+CST and -0.3875 with BCVA, and the largest biomarker effects occurred for DRT/ME, SRF and IRF.
+However, its mean scale was 1.8971 out of a maximum of 2; 97.78% of channels were amplified,
+20.31% were essentially constant, and across-sample variation was small. It learned a
+clinically associated but mostly amplifying transformation without improving prediction.
+
+![Learned gate distribution](assets/readme/03_gate_distribution.png)
+
+### Calibration and selective prediction
+
+Post-hoc analysis used the persistent OCT-only seed-42 run. Temperature scaling reduced mean
+ECE from 0.0720 to 0.0609 and Brier score from 0.0902 to 0.0855 across the 12 labels with enough
+positives to interpret. After refitting validation thresholds on the calibrated scale, macro F1
+was 0.5261; ranking metrics remained unchanged, as expected.
+
+MC dropout uncertainty tracked scan error (Spearman rho 0.5274). Referring the most uncertain
+20% of scans increased macro F1 from 0.5261 to 0.5973 and macro AUPRC from 0.5476 to 0.6197.
+This is a retrospective selective-prediction result, not a deployment claim.
+
+| Calibration | Selective prediction |
+|---|---|
+| ![Calibration before and after temperature scaling](assets/readme/04_calibration_comparison.png) | ![Performance against retained coverage](assets/readme/05_selective_prediction.png) |
+
+### Confidence intervals and explainability
+
+Patient-level bootstrap intervals for the persistent OCT run were: macro F1 0.5004
+[0.4590, 0.5795], macro AUROC 0.8505 [0.7948, 0.8905], and macro AUPRC 0.5476
+[0.5120, 0.6584]. Only this OCT checkpoint was available in persistent Drive storage, so these
+intervals do not establish a difference between models.
+
+The attention audit examined 80 IRF and DRT/ME heatmaps from 40 test scans. Twenty maps (25%)
+concentrated suspiciously on borders or background. Grad-CAM therefore provides case-review
+material, not proof that the model reasons clinically.
+
+![Attention sanity audit](assets/readme/06_attention_sanity.png)
 
 ## Quick start
 
@@ -77,11 +136,13 @@ Established by running the pipeline over the local copy, not assumed:
 | 78,822 rows, but only **9,396** deduplicated biomarker-labelled scans from **87 patients** | The effective sample size is the patient count. Patient-level bootstrap CIs only. |
 | **21% of rows are byte-identical duplicates** (8,281 groups) | Deduplicate before counting or splitting. No group crosses a patient, so patient-grouping contains them. |
 | Biomarkers graded on exactly **2 visits per eye** (first and last) | Matches the paper's protocol; the first/last contrast is a treatment-induced domain shift. |
-| Prevalence spans **67% (IRHRF) to 0.06% (serous PED)** | Per-label thresholds, not 0.5. Five labels cannot support a test-set metric. |
+| Prevalence spans **67% (IRHRF) to 0.06% (serous PED)** | Per-label thresholds, not 0.5. DRIL, VMT and serous PED had no positive test examples; RPE disruption had one. |
 | `Scan (n/49)` is present on only **22%** of rows | It belongs to the annotation block. Filter modelling rows on `has_biomarkers`. |
 | **No visit/week column**; no fundus; no 3D volumes | Visits are *inferred* from BCVA/CST change-points. Fundus and volume extensions are blocked. |
 | BCVA/CST missing for **patient 79 only** | Concentrated, so missingness is informative — impute on train, keep an indicator. |
 | Measured pixel mean ≈ **0.17**, not the paper's 0.482 | Do not reuse the paper's normalisation constants. |
+
+![Biomarker prevalence and patient support](assets/readme/01_label_prevalence.png)
 
 Full report: `outputs/reports/data_audit.md` (regenerate with `scripts/audit_data.py`).
 
@@ -212,10 +273,11 @@ with missing clinical values, and a label confined to one patient. No real data 
 - [x] **Phase 5** — Grad-CAM, attention sanity, bootstrap CIs, report (`05_explainability_and_report.ipynb`)
 - [ ] **Phase 6** — self-supervised pretraining *(fundus and volume extensions blocked: not in this mirror)*
 
-The pipeline is complete and exercised end to end. **Headline numbers still need a GPU run**:
-local CPU results use a reduced budget (128px, few epochs, one seed) and are a plumbing check,
-not a result. Run `scripts/run_comparison.py --budget colab_gpu --seeds 42 43 44 --evaluate`
-before reporting anything.
+The pipeline has been exercised end to end on an NVIDIA A100 at the full 224 px, 50-epoch
+budget across three seeds. The current evidence supports OCT over the clinical-only baseline,
+but not gated fusion over OCT. Final inferential comparison still requires persistent checkpoints
+for every model, paired patient-level bootstrap differences, and five-fold patient-grouped
+cross-validation.
 
 ---
 

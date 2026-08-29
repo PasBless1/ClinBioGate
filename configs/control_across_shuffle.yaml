@@ -1,0 +1,14 @@
+# Control C3: permute clinical values across all eyes.
+#
+# The floor. Nothing but the marginal distribution survives, so this arm should
+# match the OCT-only baseline. If it does not, something other than clinical
+# information is leaking through the clinical branch and the whole comparison is
+# invalid until that is found.
+defaults: configs/fusion_longitudinal.yaml
+
+experiment:
+  name: control_across_shuffle
+  description: "CONTROL - clinical values permuted across eyes; expected floor"
+
+data:
+  clinical_perturbation: across_patient_shuffle

@@ -1,0 +1,41 @@
+# Experiment 4: RETFound retinal pretraining instead of ImageNet.
+#
+# With 52 training patients, what the encoder already knows matters more than its
+# capacity. RETFound is a ViT-Large masked autoencoder pretrained on >700k
+# retinal images including OCT, so its features start far closer to this domain
+# than ImageNet's.
+#
+# Before running:
+#   1. pip install timm
+#   2. Download the RETFound OCT checkpoint and point pretrained_checkpoint at it.
+#      The loader ignores classifier heads and reports how many tensors matched,
+#      so a wrong checkpoint fails loudly rather than silently training from
+#      scratch.
+#
+# ViT-Large is ~300M parameters against ResNet-18's 11M, so the batch size drops
+# and the backbone learning rate drops further: a large pretrained transformer is
+# easy to destroy with too big a step.
+defaults: configs/oct_improved.yaml
+
+experiment:
+  name: oct_retfound
+  description: "Model B+ with RETFound retinal MAE pretraining"
+
+data:
+  image_size: [224, 224]   # RETFound's pretraining resolution
+
+model:
+  image_encoder: retfound_vit_large_patch16
+  pretrained: false        # weights come from the checkpoint, not torchvision
+  pretrained_checkpoint: null   # <- set to the downloaded RETFound .pth
+  checkpoint_key: model
+  image_embedding_dim: 512
+  dropout: 0.40
+
+training:
+  batch_size: 12
+  backbone_learning_rate: 0.000005
+  head_learning_rate: 0.0001
+  # A domain-pretrained trunk deserves a longer frozen probe before unfreezing.
+  freeze_backbone_epochs: 6
+  gradual_unfreeze_epochs: 8

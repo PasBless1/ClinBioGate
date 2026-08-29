@@ -101,10 +101,87 @@ class FocalLoss(nn.Module):
         return losses
 
 
+class AsymmetricLoss(nn.Module):
+    """Asymmetric multilabel loss with easy-negative probability clipping."""
+
+    def __init__(
+        self,
+        gamma_negative: float = 4.0,
+        gamma_positive: float = 1.0,
+        clip: float = 0.05,
+        eps: float = 1e-8,
+        reduction: str = "mean",
+    ) -> None:
+        super().__init__()
+        self.gamma_negative = gamma_negative
+        self.gamma_positive = gamma_positive
+        self.clip = clip
+        self.eps = eps
+        self.reduction = reduction
+
+    def forward(
+        self,
+        logits: torch.Tensor,
+        targets: torch.Tensor,
+        mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        positive = torch.sigmoid(logits)
+        negative = 1.0 - positive
+        if self.clip > 0:
+            negative = (negative + self.clip).clamp(max=1.0)
+
+        log_likelihood = targets * torch.log(positive.clamp(min=self.eps))
+        log_likelihood += (1.0 - targets) * torch.log(negative.clamp(min=self.eps))
+        gamma = self.gamma_positive * targets + self.gamma_negative * (1.0 - targets)
+        base = 1.0 - positive * targets - negative * (1.0 - targets)
+        losses = -log_likelihood * base.clamp(min=0.0).pow(gamma)
+        if mask is not None:
+            losses = losses * mask.float()
+            if self.reduction == "mean":
+                return losses.sum() / mask.float().sum().clamp(min=1.0)
+        return losses.mean() if self.reduction == "mean" else losses
+
+
+class ExclusivityRegularizedLoss(nn.Module):
+    """Add a probability-overlap penalty for verified exclusive label pairs."""
+
+    def __init__(
+        self,
+        base_loss: nn.Module,
+        exclusive_pairs: list[tuple[int, int]],
+        coefficient: float,
+    ) -> None:
+        super().__init__()
+        self.base_loss = base_loss
+        self.exclusive_pairs = exclusive_pairs
+        self.coefficient = coefficient
+
+    def forward(
+        self,
+        logits: torch.Tensor,
+        targets: torch.Tensor,
+        mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        loss = self.base_loss(logits, targets, mask)
+        if not self.exclusive_pairs or self.coefficient <= 0:
+            return loss
+        probabilities = torch.sigmoid(logits)
+        overlap = torch.stack(
+            [probabilities[:, left] * probabilities[:, right]
+             for left, right in self.exclusive_pairs],
+            dim=1,
+        )
+        return loss + self.coefficient * overlap.mean()
+
+
 class LossFactory:
     """Builds the configured loss with training-fold class weights."""
 
-    REGISTRY = {"bce": MaskedBCEWithLogitsLoss, "focal": FocalLoss}
+    REGISTRY = {
+        "bce": MaskedBCEWithLogitsLoss,
+        "focal": FocalLoss,
+        "asl": AsymmetricLoss,
+    }
 
     def build(
         self,
@@ -122,4 +199,4 @@ class LossFactory:
             raise ValueError(f"unknown loss {name!r}; available: {sorted(self.REGISTRY)}")
         if name == "bce":
             return MaskedBCEWithLogitsLoss(pos_weight=pos_weight, **kwargs)  # type: ignore[arg-type]
-        return FocalLoss(**kwargs)  # type: ignore[arg-type]
+        return self.REGISTRY[name](**kwargs)  # type: ignore[call-arg]

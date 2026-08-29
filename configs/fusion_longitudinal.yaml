@@ -1,0 +1,36 @@
+# Experiment 9: within-eye clinical context.
+#
+# The measured problem with every fusion arm so far is that absolute BCVA and CST
+# at the current visit are largely redundant with the B-scan. CST is a thickness
+# measurement of the very volume being classified, and across patients its
+# variance is dominated by differences in baseline retinal thickness rather than
+# by disease state. That is why the A100 gate collapsed into near-global gain: the
+# only thing absolute CST reliably encodes across a cohort is overall severity.
+#
+# What a single B-scan does not contain is how this eye has *moved*. Centring both
+# the clinical value and the biomarker state within an eye -- which removes patient
+# identity by construction, so the visit fingerprint cannot contribute -- leaves a
+# real association on the training fold for several biomarkers, with clinically
+# coherent signs: fluid appears as thickness rises, atrophy as it falls.
+#
+# This arm therefore feeds the current values, the signed change from the eye's own
+# baseline visit, and a flag distinguishing "no change" from "no history".
+#
+# Run scripts/preregister_targets.py FIRST. It names the labels where this is
+# predicted to help, using training patients only, so the confirmatory test is
+# fixed before any test data is touched.
+defaults: configs/fusion_residual_logit.yaml
+
+experiment:
+  name: fusion_longitudinal
+  description: "Bounded per-biomarker fusion over within-eye clinical change"
+
+data:
+  longitudinal_clinical: true
+
+model:
+  name: residual_logit_fusion
+  clinical_features: [bcva, cst, bcva_delta, cst_delta, is_baseline_visit]
+  use_missingness_indicators: true
+  clinical_residual_max_scale: 1.0
+  clinical_residual_per_label: true

@@ -19,6 +19,11 @@ from torch import nn
 from olives_biomarkers.config import TrainingConfig
 from olives_biomarkers.evaluation.metrics import MultiLabelMetrics
 from olives_biomarkers.training.callbacks import CheckpointManager, EarlyStopping, MetricHistory
+from olives_biomarkers.training.schedule import (
+    FineTuneSchedule,
+    ParameterGroupBuilder,
+    WarmupCosineSchedule,
+)
 from olives_biomarkers.utils.logging import LoggerFactory
 
 LOGGER = LoggerFactory.get("olives.trainer")
@@ -66,11 +71,32 @@ class Trainer:
         self.run_id = run_id
         self.label_names = label_names
 
-        self.optimizer = torch.optim.AdamW(
-            self.model.parameters(),
-            lr=config.learning_rate,
-            weight_decay=config.weight_decay,
+        # Discriminative learning rates: a randomly initialised head needs a much
+        # larger step than a pretrained backbone that is already near a solution.
+        # Both fall back to `learning_rate`, so an unset config behaves as before.
+        backbone_lr = config.backbone_learning_rate or config.learning_rate
+        head_lr = config.head_learning_rate or config.learning_rate
+        self.parameter_groups = ParameterGroupBuilder().build(
+            self.model, backbone_lr=backbone_lr, head_lr=head_lr, weight_decay=config.weight_decay
         )
+        self.optimizer = torch.optim.AdamW(self.parameter_groups)
+
+        self.fine_tune_schedule = FineTuneSchedule(
+            freeze_epochs=config.freeze_backbone_epochs,
+            gradual_epochs=config.gradual_unfreeze_epochs,
+        )
+        self.scheduler = (
+            WarmupCosineSchedule(
+                self.optimizer,
+                total_epochs=config.epochs,
+                warmup_epochs=config.warmup_epochs,
+                min_ratio=config.min_learning_rate_ratio,
+            )
+            if config.scheduler == "cosine"
+            else None
+        )
+        self._trainability_mode: str | None = None
+
         self.scaler = torch.amp.GradScaler(
             device="cuda", enabled=bool(config.amp and device == "cuda")
         )
@@ -90,9 +116,40 @@ class Trainer:
         )
         return self.model(image=image, clinical=clinical)
 
+    def apply_trainability(self, mode: str) -> bool:
+        """Set which encoder stages are trainable. Returns True when it changed.
+
+        The optimiser is deliberately *not* rebuilt. Every parameter is already
+        in a group; frozen ones simply produce no gradient and AdamW skips them,
+        so unfreezing preserves the momentum accumulated so far.
+        """
+        if mode == self._trainability_mode:
+            return False
+        encoder = self.model.image_encoder_module() if hasattr(self.model, "image_encoder_module") else None
+        if encoder is None:
+            self._trainability_mode = mode
+            return False
+        encoder.set_backbone_trainable(mode)
+        self._trainability_mode = mode
+        trainable = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+        LOGGER.info(
+            "encoder trainability -> %s (%s trainable parameters)", mode, f"{trainable:,}"
+        )
+        return True
+
     def _run_epoch(self, loader: Any, train: bool) -> EpochResult:
         """One pass over a loader, in train or eval mode."""
         self.model.train(train)
+        if train:
+            # Frozen stages must stay in eval mode so their BatchNorm running
+            # statistics do not drift while their weights are held fixed.
+            encoder = (
+                self.model.image_encoder_module()
+                if hasattr(self.model, "image_encoder_module")
+                else None
+            )
+            if encoder is not None:
+                encoder.enforce_frozen_eval()
         total_loss, n_batches = 0.0, 0
         logits_out: list[np.ndarray] = []
         targets_out: list[np.ndarray] = []
@@ -162,7 +219,27 @@ class Trainer:
             self.config.monitor_mode,
         )
 
+        if self.fine_tune_schedule.enabled:
+            LOGGER.info("fine-tune schedule: %s", self.fine_tune_schedule.describe())
+        if self.scheduler is not None:
+            LOGGER.info(
+                "cosine schedule with %d warmup epoch(s), floor %.3f of base LR",
+                self.config.warmup_epochs,
+                self.config.min_learning_rate_ratio,
+            )
+
         for epoch in range(1, total_epochs + 1):
+            phase = self.fine_tune_schedule.mode_for_epoch(epoch)
+            self.apply_trainability(phase)
+            learning_rates = (
+                self.scheduler.current_learning_rates()
+                if self.scheduler is not None and epoch > 1
+                else {}
+            )
+            if self.scheduler is not None:
+                self.scheduler.step(epoch)
+                learning_rates = self.scheduler.current_learning_rates()
+
             train_result = self.train_epoch(train_loader)
             val_result = self.evaluate(val_loader)
 
@@ -174,6 +251,8 @@ class Trainer:
                 "train_loss": train_result.loss,
                 "val_loss": val_result.loss,
                 "train_seconds": round(train_result.duration_s, 1),
+                "phase": phase,
+                **{f"lr_{name}": value for name, value in learning_rates.items()},
                 **{f"val_{k}": v for k, v in val_metrics.items() if np.isscalar(v)},
             }
             self.history.append(epoch, **record)
@@ -193,8 +272,9 @@ class Trainer:
                 is_best=is_best,
             )
             LOGGER.info(
-                "epoch %3d | train_loss %.4f | val_loss %.4f | %s %.4f%s",
+                "epoch %3d [%s] | train_loss %.4f | val_loss %.4f | %s %.4f%s",
                 epoch,
+                phase,
                 train_result.loss,
                 val_result.loss,
                 monitor,

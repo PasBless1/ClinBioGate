@@ -184,6 +184,72 @@ class OlivesPipeline:
             )
         return frame
 
+    def pretraining_frame(
+        self,
+        assignment: SplitAssignment,
+        manifest: Manifest | None = None,
+        include_partitions: tuple[str, ...] = ("train",),
+    ) -> pd.DataFrame:
+        """Unlabelled scans usable for self-supervised pretraining on one fold.
+
+        OLIVES has ~70k unlabelled scans against 9.4k labelled ones, so
+        pretraining on the unlabelled pool is attractive. The trap is that
+        "unlabelled" does not mean "safe": those scans still belong to patients,
+        and pretraining on a test patient's images — even without their labels —
+        lets the encoder learn that patient's anatomy. The resulting number is no
+        longer an inductive estimate.
+
+        This restricts the pool to patients in ``include_partitions`` (training
+        only by default) of the fold being evaluated, which is the guard that
+        makes a fold-wise SSL claim defensible. It must be called **per fold**;
+        a single pool shared across folds reintroduces the leak.
+
+        Args:
+            assignment: The fold whose training patients define the safe pool.
+            include_partitions: Partitions to draw from. Adding ``"val"`` is
+                defensible only if validation is not used for model selection.
+
+        Returns:
+            Deduplicated rows for the permitted patients, labelled or not.
+        """
+        manifest = manifest or self.get_manifest()
+        allowed: set[int] = set()
+        for name in include_partitions:
+            if name not in assignment.partitions:
+                raise KeyError(
+                    f"partition {name!r} not in this split; have "
+                    f"{sorted(assignment.partitions)}"
+                )
+            allowed.update(assignment.partitions[name])
+
+        frame = manifest.deduplicated(self.config.duplicates.policy)
+        pool = frame[frame[self.config.data.group_key].isin(allowed)].reset_index(drop=True)
+
+        held_out = set().union(
+            *(
+                set(patients)
+                for name, patients in assignment.partitions.items()
+                if name not in include_partitions
+            )
+        )
+        contamination = set(pool[self.config.data.group_key]) & held_out
+        if contamination:
+            raise ValueError(
+                f"pretraining pool contains held-out patients {sorted(contamination)}; "
+                "this would leak at the patient level"
+            )
+
+        LOGGER.info(
+            "pretraining pool for '%s': %d scans from %d patients (%d labelled), "
+            "%d patients excluded as held-out",
+            assignment.name,
+            len(pool),
+            pool[self.config.data.group_key].nunique(),
+            int(pool["has_biomarkers"].sum()) if "has_biomarkers" in pool else 0,
+            len(held_out),
+        )
+        return pool
+
     def run_audit(
         self, manifest: Manifest | None = None, write: bool = True
     ) -> AuditReport:

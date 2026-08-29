@@ -1,0 +1,79 @@
+# Experiment 2 + 6: retinal crop, 320px, and a proper fine-tuning schedule.
+#
+# This is the first step of the improvement plan and the new OCT reference. It
+# changes only the input pipeline and the optimisation schedule; the architecture
+# is still ResNet-18, so any gain is attributable to those two things rather than
+# to capacity.
+#
+# Why each block is here:
+#   crop_retina        ~45% of each B-scan is near-black vitreous, and 25% of the
+#                      audited Grad-CAM maps sat on border/background. Cropping
+#                      removes the area the model was wasting attention on.
+#   image_size 320     Small biomarkers (IRHRF, SHRM) can vanish when a 504x496
+#                      scan is squeezed to 224x224.
+#   train_fold norm    Measured pixel mean here is ~0.17, not the paper's 0.482,
+#                      and cropping shifts it again. Fitted on training patients
+#                      only, so it carries no leakage.
+#   patient sampler    Scan-level shuffling lets high-volume patients dominate
+#                      the gradient; sampling a patient first equalises them.
+#   freeze -> unfreeze A randomly initialised head produces large, badly directed
+#                      gradients. Training it against a frozen encoder first
+#                      stops those from damaging pretrained features.
+defaults: configs/data.yaml
+
+experiment:
+  name: oct_improved
+  description: "Model B+ - cropped 320px OCT with staged fine-tuning"
+
+data:
+  image_size: [320, 320]
+  num_workers: 2
+  crop_retina: true
+  crop_threshold: 0.04
+  crop_padding: 0.08
+  preserve_aspect_ratio: true
+  normalization: train_fold
+  normalization_samples: 512
+  image_mode: repeat
+
+model:
+  name: oct_only
+  image_encoder: resnet18
+  pretrained: true
+  image_embedding_dim: 256
+  dropout: 0.40
+
+training:
+  epochs: 40
+  batch_size: 24
+  # learning_rate is the fallback; the two below are what actually apply.
+  learning_rate: 0.0001
+  backbone_learning_rate: 0.00001
+  head_learning_rate: 0.0001
+  weight_decay: 0.001
+  early_stopping_patience: 8
+  monitor: val_macro_auprc
+  monitor_mode: max
+  amp: true
+
+  scheduler: cosine
+  warmup_epochs: 3
+  min_learning_rate_ratio: 0.01
+
+  # Epochs 1-4 head only, 5-10 also the final encoder stage, 11+ everything.
+  freeze_backbone_epochs: 4
+  gradual_unfreeze_epochs: 6
+
+  # Balance the gradient by patient rather than by scan count.
+  sampler: patient
+  samples_per_epoch: 5000
+  pos_weight: from_train_fold
+  pos_weight_unit: patient
+  pos_weight_cap: 20.0
+  loss: bce
+
+uncertainty:
+  mc_dropout_passes: 30
+
+evaluation:
+  bootstrap_iterations: 1000

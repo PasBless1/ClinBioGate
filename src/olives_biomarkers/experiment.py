@@ -29,6 +29,7 @@ import pandas as pd
 
 from olives_biomarkers.config import ExperimentConfig
 from olives_biomarkers.data.dataset import OlivesDataModule, ParquetImageReader
+from olives_biomarkers.data.longitudinal import ClinicalPerturbation, LongitudinalClinicalFeatures
 from olives_biomarkers.data.manifests import Manifest
 from olives_biomarkers.data.preprocessing import ImageTransformFactory
 from olives_biomarkers.data.splits import SplitAssignment
@@ -192,10 +193,45 @@ class ExperimentRunner:
         """Whether the configured model consumes images."""
         return self.config.model.name != "clinical_only"
 
+    def prepare_clinical_frame(self, frame: pd.DataFrame) -> pd.DataFrame:
+        """Apply the clinical control ladder, then derive within-eye contrasts.
+
+        Order matters. A perturbation replaces the raw BCVA/CST values, so it has
+        to run *before* the deltas are computed -- otherwise a control arm would
+        keep honest deltas alongside perturbed absolutes and would no longer test
+        what it claims to.
+
+        Both steps are no-ops under the default configuration, so existing runs
+        are unaffected.
+        """
+        data = self.config.data
+        features = tuple(f for f in ("bcva", "cst") if f in frame.columns)
+
+        if data.is_control_arm:
+            frame = ClinicalPerturbation(
+                mode=data.clinical_perturbation,
+                features=features,
+                seed=data.clinical_perturbation_seed,
+                bins=data.clinical_bins,
+            ).transform(frame)
+
+        if data.longitudinal_clinical:
+            frame = LongitudinalClinicalFeatures(features=features).transform(frame)
+            requested = set(self.config.model.clinical_features)
+            available = set(frame.columns)
+            unknown = sorted(requested - available)
+            if unknown:
+                raise KeyError(
+                    f"model.clinical_features names {unknown}, which the frame does not provide. "
+                    f"Derived columns available: {LongitudinalClinicalFeatures(features=features).derived_names()}"
+                )
+        return frame
+
     def build_data_module(
         self, frame: pd.DataFrame, assignment: SplitAssignment, label_columns: list[str]
     ) -> OlivesDataModule:
         """Assemble loaders, fitting clinical statistics on the training fold only."""
+        frame = self.prepare_clinical_frame(frame)
         reader = None
         if self.needs_images and "cache_path" not in frame.columns:
             reader = ParquetImageReader(
@@ -205,19 +241,56 @@ class ExperimentRunner:
                 "no image cache found; reading images straight from parquet, which is much "
                 "slower. Run ImageCacheExporter once to avoid this."
             )
+        data = self.config.data
+        training = self.config.training
+        transform_factory = ImageTransformFactory(
+            image_size=data.image_size,
+            image_mode=data.image_mode,
+            crop_retina=data.crop_retina,
+            crop_threshold=data.crop_threshold,
+            crop_padding=data.crop_padding,
+            preserve_aspect_ratio=data.preserve_aspect_ratio,
+            normalization=data.normalization,
+            horizontal_flip=data.horizontal_flip,
+        )
         return OlivesDataModule(
             frame=frame,
             assignment=assignment,
             label_columns=label_columns,
-            transform_factory=ImageTransformFactory(self.config.data.image_size),
+            transform_factory=transform_factory,
             clinical_features=self.config.model.clinical_features,
             use_missingness_indicators=self.config.model.use_missingness_indicators,
             reader=reader,
             return_image=self.needs_images,
-            batch_size=self.config.training.batch_size,
-            num_workers=self.config.data.num_workers if self.needs_images else 0,
-            group_key=self.config.data.group_key,
+            batch_size=training.batch_size,
+            num_workers=data.num_workers if self.needs_images else 0,
+            group_key=data.group_key,
+            image_mode=data.image_mode,
+            normalization_samples=data.normalization_samples,
+            sampler=training.sampler,
+            samples_per_epoch=training.samples_per_epoch,
+            rare_positive_sampling_power=training.rare_positive_sampling_power,
         ).setup()
+
+    def build_criterion(self, pos_weight: np.ndarray | None = None) -> Any:
+        """Build the configured loss, passing its own hyperparameters through.
+
+        ``pos_weight`` applies to weighted BCE only. Asymmetric loss handles
+        imbalance through its own gamma/clip terms instead, so passing class
+        weights as well would double-count the correction.
+        """
+        training = self.config.training
+        name = training.loss
+        if name == "asl":
+            return LossFactory().build(
+                "asl",
+                gamma_negative=training.asl_gamma_negative,
+                gamma_positive=training.asl_gamma_positive,
+                clip=training.asl_clip,
+            )
+        if name == "bce":
+            return LossFactory().build("bce", pos_weight=pos_weight)
+        return LossFactory().build(name)
 
     # ------------------------------------------------------------------
     # run
@@ -262,14 +335,17 @@ class ExperimentRunner:
             self.pipeline.env.device,
         )
 
+        training = self.config.training
+        # Class weights from the training fold. Aggregating at patient or visit
+        # level first stops a patient with many B-scans from dominating them.
         pos_weight = (
-            data.pos_weight(self.config.training.pos_weight_cap)
-            if self.config.training.pos_weight == "from_train_fold"
+            data.pos_weight(training.pos_weight_cap, unit=training.pos_weight_unit)
+            if training.pos_weight == "from_train_fold"
             else None
         )
         trainer = Trainer(
             model=model,
-            criterion=LossFactory().build(self.config.training.loss, pos_weight=pos_weight),
+            criterion=self.build_criterion(pos_weight),
             config=self.config.training,
             device=self.pipeline.env.device,
             checkpoint_dir=run_dir / "checkpoints",
@@ -694,11 +770,116 @@ class ResultsAggregator:
             frames.append(frame)
         return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
+    def paired_difference(
+        self,
+        model_a: str,
+        model_b: str,
+        seed: int | None = None,
+        metrics: Sequence[str] = ("macro_f1", "macro_auroc", "macro_auprc"),
+        n_iterations: int = 2000,
+        partition: str = "test",
+    ) -> pd.DataFrame:
+        """Bootstrap the difference between two models on the same patients.
+
+        Prefer this to :meth:`intervals_overlap`. Resampling the *difference*
+        cancels patient difficulty, which is shared by both arms and accounts for
+        most of the width of each marginal interval. Two overlapping intervals
+        routinely hide a difference that holds in every resample.
+
+        Args:
+            model_a: Model name of the first arm, e.g. ``"residual_logit_fusion"``.
+            model_b: Model name of the reference arm, e.g. ``"oct_only"``.
+            seed: Restrict to one seed. Required when several exist, since runs
+                from different seeds are not a matched pair.
+            partition: Which partition's predictions to compare.
+        """
+        from olives_biomarkers.evaluation.comparison import PairedPatientBootstrap
+
+        run_a = self._single_run(model_a, seed)
+        run_b = self._single_run(model_b, seed)
+        for run in (run_a, run_b):
+            if partition not in run.predictions:
+                raise KeyError(
+                    f"run '{run.run_id}' has no stored {partition} predictions; "
+                    "re-run it or load from its run directory"
+                )
+        if run_a.label_names != run_b.label_names:
+            raise ValueError("the two runs use different label sets and cannot be compared")
+
+        left, right = run_a.predictions[partition], run_b.predictions[partition]
+        test = PairedPatientBootstrap(n_iterations=n_iterations)
+        order_a, order_b = test.align(left["row_uid"], right["row_uid"])
+        return test.run_many(
+            targets=left["targets"][order_a],
+            probabilities_a=left["probabilities"][order_a],
+            probabilities_b=right["probabilities"][order_b],
+            patient_ids=left["patient_id"][order_a],
+            thresholds_a=run_a.thresholds.as_array(),
+            thresholds_b=run_b.thresholds.as_array(),
+            label_names=run_a.label_names,
+            metrics=tuple(metrics),
+            arm_a=model_a,
+            arm_b=model_b,
+        )
+
+    def paired_per_label(
+        self,
+        model_a: str,
+        model_b: str,
+        seed: int | None = None,
+        preregistered: Sequence[str] | None = None,
+        n_iterations: int = 2000,
+        partition: str = "test",
+    ) -> pd.DataFrame:
+        """Per-biomarker paired differences, split into confirmatory and exploratory.
+
+        When the hypothesis names specific labels, this is the table to report.
+        A macro average over thirteen biomarkers dilutes an effect confined to
+        three of them by a factor of four.
+        """
+        from olives_biomarkers.evaluation.comparison import PairedPatientBootstrap
+
+        run_a = self._single_run(model_a, seed)
+        run_b = self._single_run(model_b, seed)
+        left, right = run_a.predictions[partition], run_b.predictions[partition]
+        test = PairedPatientBootstrap(n_iterations=n_iterations)
+        order_a, order_b = test.align(left["row_uid"], right["row_uid"])
+        table = test.per_label(
+            targets=left["targets"][order_a],
+            probabilities_a=left["probabilities"][order_a],
+            probabilities_b=right["probabilities"][order_b],
+            patient_ids=left["patient_id"][order_a],
+            label_names=run_a.label_names,
+            arm_a=model_a,
+            arm_b=model_b,
+        )
+        if preregistered is None:
+            return table
+        return test.confirmatory_report(table, list(preregistered))
+
+    def _single_run(self, model_name: str, seed: int | None) -> RunResult:
+        """Find exactly one run for a model, or explain why it is ambiguous."""
+        matches = [r for r in self.results if r.model_name == model_name]
+        if seed is not None:
+            matches = [r for r in matches if r.seed == seed]
+        if not matches:
+            available = sorted({r.model_name for r in self.results})
+            raise KeyError(f"no run for model {model_name!r}; loaded models: {available}")
+        if len(matches) > 1:
+            seeds = sorted(r.seed for r in matches)
+            raise ValueError(
+                f"{len(matches)} runs match {model_name!r} (seeds {seeds}); pass seed= to pick "
+                "one. Runs from different seeds are not a matched pair."
+            )
+        return matches[0]
+
     def intervals_overlap(self, metric: str = "macro_auprc") -> pd.DataFrame:
         """Pairwise check of whether two models' confidence intervals overlap.
 
-        Overlapping intervals mean the comparison does not support a claim of
-        superiority, which is the honest reading with 87 patients.
+        Kept for the descriptive table only. As a *test* it is both wrong and the
+        least powerful option available: it discards the pairing, so patient
+        difficulty inflates both intervals independently. Use
+        :meth:`paired_difference` to decide whether one model beats another.
         """
         bootstrap = self.collect_bootstrap()
         if bootstrap.empty:

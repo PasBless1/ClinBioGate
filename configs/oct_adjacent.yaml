@@ -1,0 +1,18 @@
+# Experiment 5: 2.5D input - (previous, current, next) B-scans as RGB channels.
+#
+# The encoder expects three channels and currently receives the same grayscale
+# scan copied three times, which wastes two thirds of the stem. Feeding the
+# neighbouring slices instead supplies local volumetric context at no extra
+# compute, which should help the biomarkers that are inherently volumetric
+# (fluid pockets, vitreous face) and are hard to judge from one slice.
+#
+# Neighbours are taken within an inferred visit, so no slice is ever paired with
+# a scan from a different eye or time point.
+defaults: configs/oct_improved.yaml
+
+experiment:
+  name: oct_adjacent
+  description: "Model B+ with adjacent-slice 2.5D input"
+
+data:
+  image_mode: adjacent

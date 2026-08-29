@@ -1,0 +1,20 @@
+# Control C4: bin the clinical values to clinically meaningful resolution.
+#
+# CST to 25 um and BCVA to 5 ETDRS letters. This keeps everything a clinician
+# would act on and discards the extra precision that makes each visit uniquely
+# identifiable -- measured on the labelled subset, exact-value uniqueness falls
+# from 98.4% of visits to 55.6%.
+#
+# This is both diagnostic and remedy. If the fusion advantage survives binning,
+# it is a clinical effect, and the binned features are the defensible way to
+# report it. Widen the bins if uniqueness needs to fall further.
+defaults: configs/fusion_longitudinal.yaml
+
+experiment:
+  name: control_quantise
+  description: "CONTROL - clinical values binned to 25um CST / 5-letter BCVA"
+
+data:
+  clinical_perturbation: quantise
+  clinical_bin_cst: 25.0
+  clinical_bin_bcva: 5.0

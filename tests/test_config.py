@@ -14,7 +14,12 @@ class TestConfigLoader:
     @pytest.mark.parametrize(
         "stem",
         ["data", "baseline_clinical", "baseline_oct", "fusion_concat", "fusion_gated",
-         "local_cpu", "colab_gpu"],
+         "local_cpu", "colab_gpu",
+         "oct_improved", "oct_adjacent", "oct_retfound", "loss_asl",
+         "fusion_residual_logit", "fusion_film",
+         "fusion_longitudinal", "fusion_delta_only",
+         "control_patient_mean", "control_within_shuffle",
+         "control_across_shuffle", "control_quantise"],
     )
     def test_every_shipped_config_loads(self, repo_root, stem: str) -> None:
         config = ConfigLoader(repo_root).load(repo_root / "configs" / f"{stem}.yaml")
@@ -106,3 +111,146 @@ class TestValidation:
         payload = ExperimentConfig().to_dict()
         for section in ("project", "data", "model", "training", "evaluation", "split"):
             assert section in payload
+
+
+class TestImprovementConfigs:
+    """The improvement-round configs must express what they claim to."""
+
+    def test_oct_improved_enables_crop_and_320px(self, repo_root) -> None:
+        config = ConfigLoader(repo_root).load(repo_root / "configs" / "oct_improved.yaml")
+        assert config.data.crop_retina is True
+        assert config.data.image_size == (320, 320)
+        assert config.data.preserve_aspect_ratio is True
+        assert config.data.normalization == "train_fold"
+
+    def test_oct_improved_uses_discriminative_rates_and_cosine(self, repo_root) -> None:
+        training = ConfigLoader(repo_root).load(
+            repo_root / "configs" / "oct_improved.yaml"
+        ).training
+        assert training.backbone_learning_rate < training.head_learning_rate
+        assert training.scheduler == "cosine"
+        assert training.warmup_epochs > 0
+        assert training.freeze_backbone_epochs > 0
+        assert training.gradual_unfreeze_epochs > 0
+
+    def test_oct_improved_balances_by_patient(self, repo_root) -> None:
+        training = ConfigLoader(repo_root).load(
+            repo_root / "configs" / "oct_improved.yaml"
+        ).training
+        assert training.sampler == "patient"
+        assert training.pos_weight_unit == "patient"
+
+    def test_adjacent_config_switches_image_mode_only(self, repo_root) -> None:
+        loader = ConfigLoader(repo_root)
+        base = loader.load(repo_root / "configs" / "oct_improved.yaml")
+        adjacent = loader.load(repo_root / "configs" / "oct_adjacent.yaml")
+        assert adjacent.data.image_mode == "adjacent"
+        assert base.data.image_mode == "repeat"
+        # Everything else must match, or the comparison is confounded.
+        assert adjacent.training.epochs == base.training.epochs
+        assert adjacent.data.image_size == base.data.image_size
+        assert adjacent.model.name == base.model.name
+
+    def test_asl_config_switches_loss_only(self, repo_root) -> None:
+        loader = ConfigLoader(repo_root)
+        base = loader.load(repo_root / "configs" / "oct_improved.yaml")
+        asl = loader.load(repo_root / "configs" / "loss_asl.yaml")
+        assert asl.training.loss == "asl"
+        assert base.training.loss == "bce"
+        assert asl.model.name == base.model.name
+        assert asl.data.image_size == base.data.image_size
+
+    def test_retfound_config_points_at_a_vit_backbone(self, repo_root) -> None:
+        config = ConfigLoader(repo_root).load(repo_root / "configs" / "oct_retfound.yaml")
+        assert config.model.image_encoder == "retfound_vit_large_patch16"
+        # torchvision weights must be off; the weights come from the checkpoint.
+        assert config.model.pretrained is False
+
+    def test_fusion_configs_select_the_bounded_variants(self, repo_root) -> None:
+        loader = ConfigLoader(repo_root)
+        residual = loader.load(repo_root / "configs" / "fusion_residual_logit.yaml")
+        film = loader.load(repo_root / "configs" / "fusion_film.yaml")
+        assert residual.model.name == "residual_logit_fusion"
+        assert residual.model.clinical_residual_per_label is True
+        assert film.model.name == "bounded_film_fusion"
+        assert film.model.film_max_scale == 0.25
+
+    def test_fusion_configs_inherit_the_improved_oct_pipeline(self, repo_root) -> None:
+        """Fusion must be tested on top of the best OCT setup, not the old one."""
+        loader = ConfigLoader(repo_root)
+        base = loader.load(repo_root / "configs" / "oct_improved.yaml")
+        for stem in ("fusion_residual_logit", "fusion_film"):
+            config = loader.load(repo_root / "configs" / f"{stem}.yaml")
+            assert config.data.crop_retina == base.data.crop_retina
+            assert config.data.image_size == base.data.image_size
+            assert config.training.scheduler == base.training.scheduler
+
+
+class TestLongitudinalAndControlConfigs:
+    """The within-eye arm and the control ladder that keeps it honest."""
+
+    def test_longitudinal_arm_requests_the_derived_features(self, repo_root) -> None:
+        config = ConfigLoader(repo_root).load(repo_root / "configs" / "fusion_longitudinal.yaml")
+        assert config.data.longitudinal_clinical is True
+        assert "cst_delta" in config.model.clinical_features
+        assert "bcva_delta" in config.model.clinical_features
+        assert config.data.clinical_perturbation == "none"
+
+    def test_longitudinal_arm_uses_the_per_label_residual_design(self, repo_root) -> None:
+        """The gate cannot express 'use CST for this label only'; beta can."""
+        config = ConfigLoader(repo_root).load(repo_root / "configs" / "fusion_longitudinal.yaml")
+        assert config.model.name == "residual_logit_fusion"
+        assert config.model.clinical_residual_per_label is True
+
+    def test_delta_only_arm_withholds_the_absolute_values(self, repo_root) -> None:
+        """This arm has no fingerprint left to exploit, which is the point."""
+        config = ConfigLoader(repo_root).load(repo_root / "configs" / "fusion_delta_only.yaml")
+        assert config.model.clinical_features == ["bcva_delta", "cst_delta", "is_baseline_visit"]
+        assert "cst" not in config.model.clinical_features
+        assert "bcva" not in config.model.clinical_features
+
+    @pytest.mark.parametrize(
+        "stem,mode",
+        [
+            ("control_patient_mean", "patient_mean"),
+            ("control_within_shuffle", "within_patient_shuffle"),
+            ("control_across_shuffle", "across_patient_shuffle"),
+            ("control_quantise", "quantise"),
+        ],
+    )
+    def test_each_control_selects_its_perturbation(self, repo_root, stem, mode) -> None:
+        config = ConfigLoader(repo_root).load(repo_root / "configs" / f"{stem}.yaml")
+        assert config.data.clinical_perturbation == mode
+        assert config.data.is_control_arm is True
+
+    def test_controls_match_the_arm_they_are_read_against(self, repo_root) -> None:
+        """A control differing in anything but the perturbation proves nothing."""
+        loader = ConfigLoader(repo_root)
+        base = loader.load(repo_root / "configs" / "fusion_longitudinal.yaml")
+        for stem in ("control_patient_mean", "control_within_shuffle",
+                     "control_across_shuffle", "control_quantise"):
+            config = loader.load(repo_root / "configs" / f"{stem}.yaml")
+            assert config.model.name == base.model.name
+            assert config.model.clinical_features == base.model.clinical_features
+            assert config.data.image_size == base.data.image_size
+            assert config.data.crop_retina == base.data.crop_retina
+            assert config.training.epochs == base.training.epochs
+            assert config.training.scheduler == base.training.scheduler
+
+    def test_unknown_perturbation_is_rejected(self) -> None:
+        from olives_biomarkers.config import DataConfig
+
+        with pytest.raises(ValueError, match="unknown clinical_perturbation"):
+            DataConfig(clinical_perturbation="scramble")
+
+    def test_default_config_is_not_a_control(self) -> None:
+        from olives_biomarkers.config import DataConfig
+
+        assert DataConfig().is_control_arm is False
+        assert DataConfig().longitudinal_clinical is False
+
+    def test_quantise_bins_round_trip_through_save(self, repo_root, tmp_path) -> None:
+        original = ConfigLoader(repo_root).load(repo_root / "configs" / "control_quantise.yaml")
+        reloaded = ConfigLoader(repo_root).load(original.save(tmp_path / "resolved.yaml"))
+        assert reloaded.data.clinical_bins == original.data.clinical_bins
+        assert reloaded.data.clinical_perturbation == "quantise"

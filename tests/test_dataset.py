@@ -274,3 +274,172 @@ class TestParquetImageReader:
             payload = reader.read_bytes(int(row["shard_index"]), int(row["row_in_shard"]))
             digest = hashlib.blake2b(payload, digest_size=12).hexdigest()
             assert digest == row["image_hash"], "reader returned a different image than indexed"
+
+
+class TestExperimentRunnerWiring:
+    """Config knobs must actually reach the transform factory and the loader.
+
+    Regression guard: ``build_data_module`` previously constructed
+    ``ImageTransformFactory(image_size)`` and nothing else, so ``crop_retina``,
+    ``image_mode``, ``normalization`` and the sampler settings were silently
+    ignored no matter what the config said.
+    """
+
+    @staticmethod
+    def _runner(synthetic_root, repo_root, **data_overrides):
+        from olives_biomarkers.config import ConfigLoader
+        from olives_biomarkers.experiment import ExperimentRunner
+        from olives_biomarkers.pipeline import OlivesPipeline
+
+        config = ConfigLoader(repo_root).load(repo_root / "configs" / "data.yaml")
+        for key, value in data_overrides.items():
+            target = config.training if hasattr(config.training, key) else config.data
+            setattr(target, key, value)
+
+        from olives_biomarkers.utils.environment import RuntimeEnvironment
+
+        pipeline = OlivesPipeline.__new__(OlivesPipeline)
+        pipeline.config = config
+        pipeline.data_root = synthetic_root
+        pipeline.env = RuntimeEnvironment.detect(repo_root)
+        pipeline.output_dir = repo_root / "outputs"
+        return ExperimentRunner(pipeline, config)
+
+    def test_transform_options_are_propagated(self, synthetic_root, repo_root) -> None:
+        runner = self._runner(
+            synthetic_root,
+            repo_root,
+            crop_retina=True,
+            preserve_aspect_ratio=True,
+            image_mode="adjacent",
+            normalization="olives",
+            horizontal_flip=True,
+            image_size=(320, 320),
+        )
+        from olives_biomarkers.data.preprocessing import ImageTransformFactory
+
+        factory = ImageTransformFactory(
+            image_size=runner.config.data.image_size,
+            image_mode=runner.config.data.image_mode,
+            crop_retina=runner.config.data.crop_retina,
+            preserve_aspect_ratio=runner.config.data.preserve_aspect_ratio,
+            normalization=runner.config.data.normalization,
+            horizontal_flip=runner.config.data.horizontal_flip,
+        )
+        assert factory.crop_retina is True
+        assert factory.preserve_aspect_ratio is True
+        assert factory.image_mode == "adjacent"
+        assert factory.image_size == (320, 320)
+
+    def test_data_module_receives_sampler_settings(
+        self, synthetic_root, repo_root, manifest, modelling_frame
+    ) -> None:
+        from olives_biomarkers.data.splits import PatientGroupedSplitter
+
+        runner = self._runner(
+            synthetic_root, repo_root, sampler="patient", rare_positive_sampling_power=0.5
+        )
+        runner.config.model.name = "clinical_only"   # skip image I/O
+        assignment = PatientGroupedSplitter(seed=42).split(modelling_frame)
+        module = runner.build_data_module(
+            modelling_frame, assignment, manifest.label_columns
+        )
+        assert module.sampler == "patient"
+        assert module.rare_positive_sampling_power == 0.5
+
+    def test_patient_sampler_is_actually_used_by_the_train_loader(
+        self, synthetic_root, repo_root, manifest, modelling_frame
+    ) -> None:
+        from olives_biomarkers.data.dataset import GroupBalancedSampler
+        from olives_biomarkers.data.splits import PatientGroupedSplitter
+
+        runner = self._runner(synthetic_root, repo_root, sampler="patient")
+        runner.config.model.name = "clinical_only"
+        assignment = PatientGroupedSplitter(seed=42).split(modelling_frame)
+        module = runner.build_data_module(modelling_frame, assignment, manifest.label_columns)
+
+        train_loader = module.dataloader("train")
+        assert isinstance(train_loader.sampler, GroupBalancedSampler)
+        # Evaluation partitions must stay deterministic and unbalanced.
+        assert not isinstance(module.dataloader("test", shuffle=False).sampler, GroupBalancedSampler)
+
+    def test_asl_config_reaches_the_criterion(self, synthetic_root, repo_root) -> None:
+        from olives_biomarkers.training.losses import AsymmetricLoss
+
+        runner = self._runner(synthetic_root, repo_root)
+        runner.config.training.loss = "asl"
+        runner.config.training.asl_gamma_negative = 3.0
+        runner.config.training.asl_clip = 0.1
+        criterion = runner.build_criterion(pos_weight=None)
+        assert isinstance(criterion, AsymmetricLoss)
+        assert criterion.gamma_negative == 3.0
+        assert criterion.clip == 0.1
+
+    def test_bce_still_receives_class_weights(self, synthetic_root, repo_root) -> None:
+        from olives_biomarkers.training.losses import MaskedBCEWithLogitsLoss
+
+        runner = self._runner(synthetic_root, repo_root)
+        runner.config.training.loss = "bce"
+        criterion = runner.build_criterion(pos_weight=np.full(16, 3.0, dtype=np.float32))
+        assert isinstance(criterion, MaskedBCEWithLogitsLoss)
+        assert criterion.pos_weight is not None
+
+
+class TestClinicalFramePreparation:
+    """The within-eye features and the control ladder must reach the loader.
+
+    ``prepare_clinical_frame`` runs inside ``build_data_module``, so a config
+    that asks for longitudinal features but never receives them would train an
+    ordinary fusion model while claiming to test the longitudinal hypothesis.
+    """
+
+    @staticmethod
+    def _runner(synthetic_root, repo_root, **data_overrides):
+        return TestExperimentRunnerWiring._runner(synthetic_root, repo_root, **data_overrides)
+
+    def test_default_config_is_a_no_op(self, synthetic_root, repo_root, modelling_frame) -> None:
+        runner = self._runner(synthetic_root, repo_root)
+        out = runner.prepare_clinical_frame(modelling_frame)
+        assert "cst_delta" not in out.columns
+        assert out["cst"].equals(modelling_frame["cst"])
+
+    def test_longitudinal_flag_adds_the_contrast_columns(
+        self, synthetic_root, repo_root, modelling_frame
+    ) -> None:
+        runner = self._runner(synthetic_root, repo_root, longitudinal_clinical=True)
+        out = runner.prepare_clinical_frame(modelling_frame)
+        for column in ("cst_delta", "bcva_delta", "cst_baseline", "is_baseline_visit"):
+            assert column in out.columns
+
+    def test_unknown_clinical_feature_names_the_available_ones(
+        self, synthetic_root, repo_root, modelling_frame
+    ) -> None:
+        runner = self._runner(synthetic_root, repo_root, longitudinal_clinical=True)
+        runner.config.model.clinical_features = ["bcva", "cst_slope"]
+        with pytest.raises(KeyError, match="cst_delta"):
+            runner.prepare_clinical_frame(modelling_frame)
+
+    def test_perturbation_reaches_the_frame(
+        self, synthetic_root, repo_root, modelling_frame
+    ) -> None:
+        runner = self._runner(synthetic_root, repo_root, clinical_perturbation="patient_mean")
+        out = runner.prepare_clinical_frame(modelling_frame)
+        # One value per patient. The synthetic cohort includes a patient whose
+        # clinical values are entirely missing, and whose mean is therefore NaN;
+        # nunique() is 0 there, not 1, and that is the correct outcome.
+        distinct = out.groupby("patient_id")["cst"].nunique()
+        assert (distinct <= 1).all()
+        assert (distinct == 1).sum() >= out["patient_id"].nunique() - 1
+
+    def test_perturbation_is_applied_before_the_deltas(
+        self, synthetic_root, repo_root, modelling_frame
+    ) -> None:
+        """A control arm must not keep honest deltas beside perturbed absolutes."""
+        runner = self._runner(
+            synthetic_root,
+            repo_root,
+            longitudinal_clinical=True,
+            clinical_perturbation="patient_mean",
+        )
+        out = runner.prepare_clinical_frame(modelling_frame)
+        assert np.allclose(out["cst_delta"].dropna(), 0.0)

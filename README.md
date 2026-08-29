@@ -10,12 +10,17 @@ probabilities, uncertainty estimates and per-label explanations.
 
 ## Research question
 
-> Can clinically grounded fusion of OCT features with BCVA and CST improve multilabel retinal
-> biomarker detection, and produce better-calibrated, more reliable predictions than an OCT-only
-> model on OLIVES?
+> Can clinically grounded fusion of OCT features with visit-level BCVA and CST improve multilabel
+> retinal biomarker detection — and where it appears to, can that gain be shown to reflect clinical
+> signal rather than visit identity?
 
 A rigorous negative result — clinical fusion failing to beat a well-controlled OCT baseline — is a
 legitimate and useful outcome. The evaluation is built so that outcome would be believable.
+
+The second clause is not decoration. In this cohort the pair `(BCVA, CST)` identifies the visit
+uniquely in **97–100% of cases in every fold**, so a fusion model can improve by memorising which
+visit it is looking at. That would not transfer to another clinic and is not a clinical finding.
+Distinguishing the two is what the control ladder below exists for.
 
 ---
 
@@ -77,6 +82,144 @@ concentrated suspiciously on borders or background. Grad-CAM therefore provides 
 material, not proof that the model reasons clinically.
 
 ![Attention sanity audit](assets/readme/06_attention_sanity.png)
+
+## Improvement plan (next round)
+
+The A100 result points at the input pipeline and the fine-tuning schedule, not at
+model capacity: OCT-only already matches both fusion models, and the clinical gate was
+near-saturated (mean scale 1.897/2.0, 97.78% of channels amplified), so it was acting as
+global gain rather than selective modulation.
+
+### What changed in the code
+
+| # | Change | Evidence it addresses | Where |
+|---|---|---|---|
+| 1 | Deterministic retinal crop before resize | ~45% of pixels near-black; 25% of audited heatmaps on border/background | `RetinalTissueCrop`, `data.crop_retina` |
+| 2 | 320px input, aspect-ratio padding, train-fold normalisation | Small biomarkers vanish at 224px from 504x496; measured mean is 0.17 not 0.482 | `configs/oct_improved.yaml` |
+| 3 | RETFound ViT-L retinal MAE weights | 52 training patients; retinal pretraining beats ImageNet on label efficiency | `ImageEncoder`, `configs/oct_retfound.yaml` |
+| 4 | 2.5D adjacent B-scans as the three channels | Grayscale was copied 3x, wasting the stem; neighbours add volumetric context | `data.image_mode: adjacent`, `configs/oct_adjacent.yaml` |
+| 5 | Patient/visit-balanced sampling and class weights | Scan-level shuffling lets high-volume patients dominate the gradient | `GroupBalancedSampler`, `training.sampler` |
+| 6 | Discriminative LRs, warmup+cosine, progressive unfreeze | Train loss fell while validation degraded; one flat LR for the whole net | `training/schedule.py` |
+| 7 | Asymmetric loss as an ablation | 5 labels below 1% prevalence; weighted BCE still swamped by easy negatives | `AsymmetricLoss`, `configs/loss_asl.yaml` |
+| 8 | Bounded fusion replacing the gate | Gate reached ~2x global amplification and lost to OCT-only | `ResidualLogitFusionModel`, `BoundedFiLMFusionModel` |
+| 9 | Seed ensembling | 13 test patients makes any single seed unstable | `SeedEnsemble`, `--ensemble` |
+
+### The two replacement fusion designs
+
+Both start as the OCT baseline **exactly**, so clinical input has to earn its influence
+against validation rather than being switched on at initialisation:
+
+```
+residual_logit_fusion:  logits = oct_logits + beta * clinical_logits
+                        beta init 0, one bounded coefficient per biomarker
+
+bounded_film_fusion:    scale = 1 + 0.25 * tanh(gamma)
+                        modulated = scale * oct_features + shift
+```
+
+`ResidualLogitFusionModel.beta_values()` is the interpretable output: CST should be
+allowed to inform DRT/ME, IRF and SRF and stay near zero for the vitreous-face labels.
+Report those coefficients whether or not the macro metric moves — they answer the
+research question more directly than a 0.005 difference in AUPRC.
+
+### Recommended experiment order
+
+```bash
+# 1. Current OCT baseline (already have it)
+# 2. Retinal crop + 320px + staged fine-tuning
+python scripts/run_comparison.py --arms B E --seeds 42 43 44 --evaluate --ensemble
+
+# 3-5. 2.5D input, then RETFound (set model.pretrained_checkpoint first)
+python scripts/train.py --config configs/oct_adjacent.yaml --seed 42
+python scripts/train.py --config configs/oct_retfound.yaml --seed 42
+
+# 6. Loss ablation against the BCE reference
+python scripts/train.py --config configs/loss_asl.yaml --seed 42
+
+# 7. Bounded clinical fusion over the best OCT configuration
+python scripts/run_comparison.py --arms E G H --seeds 42 43 44 --evaluate --ensemble
+
+# 8. Within-eye clinical context, the arm with a measured mechanism.
+#    Pre-register the target labels FIRST; it reads training patients only.
+python scripts/preregister_targets.py --folds
+python scripts/run_comparison.py --arms E I J --seeds 42 43 44 --evaluate     --preregistered ir_hemorrhages
+
+# 9. The control ladder. Only meaningful if step 8 showed a gain.
+python scripts/run_comparison.py --controls --seeds 42 --evaluate
+
+# 10. Five-fold grouped confirmation of the winner
+python scripts/make_splits.py --config configs/data.yaml --folds
+```
+
+Do not start with a larger backbone or a longer schedule. The evidence points at wasted
+image area, ImageNet-only pretraining, missing inter-slice context, and patient-level
+data scarcity.
+
+### Within-eye clinical context, and the controls for it
+
+Absolute BCVA and CST at the current visit are largely redundant with the B-scan — CST is a
+thickness measurement of the very volume being classified, and across patients its variance is
+dominated by differences in baseline retinal thickness rather than disease state. That is the
+mechanical reason the A100 gate collapsed into near-global amplification.
+
+What a single B-scan does not contain is how the eye has **moved**. Centring both the clinical value
+and the biomarker state within an eye removes patient identity by construction, so the visit
+fingerprint cannot contribute. Measured on training patients only, several biomarkers retain a
+clinically coherent association — fluid appears as thickness rises, atrophy as it falls.
+
+`configs/fusion_longitudinal.yaml` (arm I) adds the signed change from each eye's own baseline visit.
+`configs/fusion_delta_only.yaml` (arm J) withholds the absolute values entirely: a delta is zero at
+every baseline visit and a small signed number elsewhere, so that arm has no fingerprint left to
+exploit. If J beats the OCT reference, the gain cannot be memorisation.
+
+| arm | control | what survives | reading if the gain holds up |
+|---|---|---|---|
+| K | `patient_mean` | patient severity, no visit contrast | the gain was never longitudinal |
+| L | `within_patient_shuffle` | identity and marginals | the gain was a fingerprint |
+| M | `across_patient_shuffle` | marginals only | floor; anything here is a bug |
+| N | `quantise` | clinical meaning, not exact values | the gain is a clinical effect |
+
+`quantise` bins CST to 25 µm and BCVA to 5 letters, which drops exact-value visit uniqueness from
+98.4% to 55.6% while keeping everything a clinician would act on. It is both the diagnostic and the
+remedy: if the gain survives binning, the binned features are the defensible way to report it.
+
+**A control that retains most of the gain has not been passed.** It means the thing it destroys was
+not what the fusion arm was using.
+
+### Pre-registered targets
+
+`scripts/preregister_targets.py` measures the within-eye association on each fold's **training
+patients only** and names the labels where fusion is predicted to help, before any test data is
+touched. A label qualifies on two independent grounds: an association strong enough to be a
+mechanism, and an OCT baseline low enough to leave room.
+
+| fold | qualifying labels |
+|---|---|
+| 0, 2, 4 | `ir_hemorrhages`, `ez_disruption` |
+| 1, 3 | `ir_hemorrhages` |
+| **every fold** | **`ir_hemorrhages`** |
+
+`ir_hemorrhages` is therefore the confirmatory set; everything else is exploratory and must be
+reported as such. The procedure earns its keep immediately: `atrophy_thinning` looks strongly
+associated (r = −0.49, p = 0.006) when all 87 patients are pooled, and qualifies in **no fold** once
+held-out patients are excluded. That is precisely the artefact the guard exists to catch.
+
+### Comparing two arms
+
+Use `ResultsAggregator.paired_difference`, not `intervals_overlap`. Two independently computed
+intervals overlap mostly because patient difficulty is wide, and that component is shared by both
+arms and cancels when the difference itself is resampled. `intervals_overlap` is kept for the
+descriptive table only; as a test it is both wrong and the least powerful option available.
+
+### Self-supervised pretraining on OLIVES
+
+If you pretrain on the ~70k unlabelled scans rather than using RETFound, use
+`pipeline.pretraining_frame(assignment)` **per fold**. "Unlabelled" is not "safe":
+pretraining on a held-out patient's scans teaches the encoder that patient's anatomy and
+the result stops being an inductive estimate. That method restricts the pool to the
+fold's training patients and raises if a held-out patient slips in.
+
+---
 
 ## Quick start
 
@@ -209,12 +352,17 @@ editing a `.py` file and re-running a cell picks up the change.
 
 ## Models
 
-| ID | Model | Purpose |
+| ID | Model | Clinical influence on the OCT path |
 |---|---|---|
-| A | `clinical_only` | How much biomarker signal is in BCVA + CST alone |
-| B | `oct_only` | The imaging baseline every fusion claim is measured against |
-| C | `concat_fusion` | Ordinary feature concatenation — the control for D |
-| D | `gated_fusion` | **Proposed:** clinical embedding gates the OCT features |
+| A | `clinical_only` | n/a — how much signal is in BCVA + CST alone |
+| B | `oct_only` | none — the imaging baseline every fusion claim is measured against |
+| C | `concat_fusion` | additive, in feature space, via a shared head |
+| D | `gated_fusion` | multiplicative gate over every channel, unbounded toward 2x |
+| G | `residual_logit_fusion` | additive in *logit* space; one bounded coefficient per biomarker |
+| H | `bounded_film_fusion` | multiplicative scale + shift, capped at ±25% |
+
+D is the original proposal and the A100 run did not support it. G and H are the bounded
+replacements; both begin as an exact copy of B.
 
 The hypothesis behind D is that clinical measurements say *how to read* a scan rather than what the
 answer is — high CST should raise the weight on fluid-related image features. Concatenation cannot
@@ -271,6 +419,13 @@ with missing clinical values, and a label confined to one patient. No real data 
 - [x] **Phase 3** — gated fusion D, gate analysis, ablations (`03_gated_fusion.ipynb`)
 - [x] **Phase 4** — MC dropout, temperature scaling, selective prediction (`04_uncertainty_calibration.ipynb`)
 - [x] **Phase 5** — Grad-CAM, attention sanity, bootstrap CIs, report (`05_explainability_and_report.ipynb`)
+- [x] **Improvement round implemented** — crop/320px, 2.5D input, RETFound support,
+      balanced sampling, staged fine-tuning, ASL, two bounded fusion designs, seed
+      ensembling. **None of it has been trained yet**; the A100 numbers above are still
+      from the previous round.
+- [x] **Within-eye clinical context implemented** — longitudinal features, the four-rung control
+      ladder, pre-registration of target labels, and paired patient-level difference testing.
+      **Not trained yet.**
 - [ ] **Phase 6** — self-supervised pretraining *(fundus and volume extensions blocked: not in this mirror)*
 
 The pipeline has been exercised end to end on an NVIDIA A100 at the full 224 px, 50-epoch

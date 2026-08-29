@@ -1,0 +1,19 @@
+# Experiment 9b: within-eye change ONLY, absolute values withheld.
+#
+# The strongest possible answer to "was the gain just visit memorisation?" is an
+# arm that cannot memorise. Absolute BCVA and CST identify the visit uniquely in
+# 97-100% of cases in every fold; their within-eye differences do not, because a
+# delta is zero for every baseline visit and is a small signed number elsewhere.
+#
+# If this arm improves on the OCT baseline, the improvement cannot be a fingerprint
+# effect -- there is no fingerprint left to exploit. It is the cleaner test of the
+# hypothesis, and the weaker model, because it discards the severity signal that
+# absolute CST does legitimately carry.
+defaults: configs/fusion_longitudinal.yaml
+
+experiment:
+  name: fusion_delta_only
+  description: "Fusion on within-eye clinical change alone; absolute values withheld"
+
+model:
+  clinical_features: [bcva_delta, cst_delta, is_baseline_visit]

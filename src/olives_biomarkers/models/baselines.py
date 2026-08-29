@@ -31,6 +31,18 @@ class BaseBiomarkerModel(nn.Module):
         """Intermediate representations, for ablation and fusion analysis."""
         raise NotImplementedError
 
+    def image_encoder_module(self) -> ImageEncoder | None:
+        """The pretrained image encoder, or None for clinical-only models.
+
+        Lets the trainer apply discriminative learning rates and progressive
+        unfreezing without knowing which attribute each model stores it under.
+        """
+        for attribute in ("encoder", "image_encoder"):
+            module = getattr(self, attribute, None)
+            if isinstance(module, ImageEncoder):
+                return module
+        return None
+
     def n_parameters(self, trainable_only: bool = True) -> int:
         """Parameter count, reported alongside every result."""
         params = self.parameters()
@@ -102,6 +114,8 @@ class OCTOnlyModel(BaseBiomarkerModel):
         embedding_dim: int = 256,
         dropout: float = 0.3,
         in_channels: int = 3,
+        pretrained_checkpoint: str | None = None,
+        checkpoint_key: str = "model",
     ) -> None:
         super().__init__()
         self.encoder = ImageEncoder(
@@ -110,6 +124,8 @@ class OCTOnlyModel(BaseBiomarkerModel):
             embedding_dim=embedding_dim,
             dropout=dropout,
             in_channels=in_channels,
+            pretrained_checkpoint=pretrained_checkpoint,
+            checkpoint_key=checkpoint_key,
         )
         self.head = MultiLabelHead(embedding_dim, n_labels, dropout=dropout)
 
@@ -151,6 +167,8 @@ class ConcatFusionModel(BaseBiomarkerModel):
         clinical_hidden_dims: list[int] | None = None,
         dropout: float = 0.3,
         in_channels: int = 3,
+        pretrained_checkpoint: str | None = None,
+        checkpoint_key: str = "model",
     ) -> None:
         super().__init__()
         self.image_encoder = ImageEncoder(
@@ -159,6 +177,8 @@ class ConcatFusionModel(BaseBiomarkerModel):
             embedding_dim=image_embedding_dim,
             dropout=dropout,
             in_channels=in_channels,
+            pretrained_checkpoint=pretrained_checkpoint,
+            checkpoint_key=checkpoint_key,
         )
         self.clinical_encoder = ClinicalEncoder(
             input_dim=clinical_dim,

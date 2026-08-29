@@ -18,7 +18,7 @@ from __future__ import annotations
 import io
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
 import numpy as np
 import pandas as pd
@@ -192,6 +192,54 @@ class OlivesSample:
     patient_id: int
 
 
+class GroupBalancedSampler:
+    """Sample patients or visits uniformly, then choose one of their scans.
+
+    Optional rare-positive weighting is computed after aggregating labels at the
+    selected group level, so repeated B-scans never multiply a patient's weight.
+    """
+
+    def __init__(
+        self,
+        group_ids: np.ndarray,
+        targets: np.ndarray | None = None,
+        num_samples: int | None = None,
+        rare_positive_power: float = 0.0,
+        seed: int = 42,
+    ) -> None:
+        self.group_ids = np.asarray(group_ids)
+        self.num_samples = int(num_samples or len(self.group_ids))
+        self.seed = seed
+        self.epoch = 0
+        self.groups = np.unique(self.group_ids)
+        self.indices = {
+            group: np.flatnonzero(self.group_ids == group) for group in self.groups
+        }
+        weights = np.ones(len(self.groups), dtype=np.float64)
+        if targets is not None and rare_positive_power > 0:
+            group_targets = np.stack(
+                [np.asarray(targets)[self.indices[group]].max(axis=0) for group in self.groups]
+            )
+            prevalence = np.clip(group_targets.mean(axis=0), 0.02, 1.0)
+            rarity = group_targets / prevalence
+            group_score = np.maximum(1.0, rarity.max(axis=1))
+            weights *= np.power(np.clip(group_score, 1.0, 10.0), rare_positive_power)
+        self.probabilities = weights / weights.sum()
+
+    def __len__(self) -> int:
+        return self.num_samples
+
+    def __iter__(self) -> Iterator[int]:
+        rng = np.random.default_rng(self.seed + self.epoch)
+        self.epoch += 1
+        selected = rng.choice(
+            len(self.groups), size=self.num_samples, replace=True, p=self.probabilities
+        )
+        for group_position in selected:
+            candidates = self.indices[self.groups[group_position]]
+            yield int(rng.choice(candidates))
+
+
 class OlivesDataset:
     """Multilabel OCT dataset over a manifest partition.
 
@@ -212,12 +260,16 @@ class OlivesDataset:
         transform: Callable[[Image.Image], Any] | None = None,
         reader: ParquetImageReader | None = None,
         return_image: bool = True,
+        image_mode: str = "repeat",
     ) -> None:
         self.frame = frame.reset_index(drop=True)
         self.label_columns = label_columns
         self.transform = transform
         self.reader = reader
         self.return_image = return_image
+        self.image_mode = image_mode
+        if image_mode not in {"repeat", "grayscale", "adjacent"}:
+            raise ValueError(f"unknown image_mode {image_mode!r}")
 
         self.targets = self.frame[label_columns].to_numpy(dtype=np.float32)
         self.row_uids = self.frame["row_uid"].to_numpy()
@@ -234,6 +286,30 @@ class OlivesDataset:
                 "return_image=True needs either a 'cache_path' column (run ImageCacheExporter) "
                 "or a ParquetImageReader"
             )
+        self.neighbor_indices = self._build_neighbor_indices()
+
+    def _build_neighbor_indices(self) -> np.ndarray:
+        """Previous/current/next indices within an inferred OCT visit."""
+        neighbors = np.repeat(np.arange(len(self.frame))[:, None], 3, axis=1)
+        if self.image_mode != "adjacent" or self.frame.empty:
+            return neighbors
+        if "visit_uid" in self.frame.columns:
+            grouped = self.frame.groupby("visit_uid", sort=False).indices.values()
+        else:
+            keys = [c for c in ("patient_id", "eye_id", "visit_index") if c in self.frame]
+            grouped = self.frame.groupby(keys, sort=False).indices.values()
+        for positions in grouped:
+            positions = np.asarray(positions, dtype=int)
+            if "scan_number" in self.frame.columns:
+                order = pd.to_numeric(
+                    self.frame.iloc[positions]["scan_number"], errors="coerce"
+                ).fillna(self.frame.iloc[positions]["row_uid"])
+                positions = positions[np.argsort(order.to_numpy(), kind="stable")]
+            for offset, current in enumerate(positions):
+                previous = positions[max(0, offset - 1)]
+                following = positions[min(len(positions) - 1, offset + 1)]
+                neighbors[current] = (previous, current, following)
+        return neighbors
 
     def __len__(self) -> int:
         return len(self.frame)
@@ -259,6 +335,16 @@ class OlivesDataset:
             raise FileNotFoundError(f"no image source for row {index}")
         return self.reader.read_image(int(row["shard_index"]), int(row["row_in_shard"]))
 
+    def load_model_image(self, index: int) -> Image.Image:
+        """Load one grayscale B-scan or a registered adjacent-slice RGB triplet."""
+        if self.image_mode != "adjacent":
+            return self.load_image(index).convert("L")
+        slices = [
+            self.load_image(int(position)).convert("L")
+            for position in self.neighbor_indices[index]
+        ]
+        return Image.merge("RGB", tuple(slices))
+
     def __getitem__(self, index: int) -> dict[str, Any]:
         import torch
 
@@ -266,7 +352,7 @@ class OlivesDataset:
         clinical = torch.from_numpy(self.clinical[index])
 
         if self.return_image:
-            image = self.load_image(index).convert("L")
+            image = self.load_model_image(index)
             image = self.transform(image) if self.transform is not None else image
         else:
             image = torch.zeros(0)
@@ -305,6 +391,11 @@ class OlivesDataModule:
         batch_size: int = 32,
         num_workers: int = 4,
         group_key: str = "patient_id",
+        image_mode: str = "repeat",
+        normalization_samples: int = 512,
+        sampler: str = "shuffle",
+        samples_per_epoch: int | None = None,
+        rare_positive_sampling_power: float = 0.0,
     ) -> None:
         self.frame = frame
         self.assignment = assignment
@@ -315,6 +406,11 @@ class OlivesDataModule:
         self.batch_size = batch_size
         self.num_workers = num_workers
         self.group_key = group_key
+        self.image_mode = image_mode
+        self.normalization_samples = normalization_samples
+        self.sampler = sampler
+        self.samples_per_epoch = samples_per_epoch
+        self.rare_positive_sampling_power = rare_positive_sampling_power
 
         self.preprocessor = ClinicalPreprocessor(
             features=clinical_features or ["bcva", "cst"],
@@ -333,6 +429,19 @@ class OlivesDataModule:
         if train_frame.empty:
             raise ValueError("training partition is empty")
         self.preprocessor.fit(train_frame)
+        if self.return_image and self.transform_factory.normalization == "train_fold":
+            raw = OlivesDataset(
+                frame=train_frame,
+                label_columns=self.label_columns,
+                reader=self.reader,
+                return_image=True,
+                image_mode="repeat",
+            )
+            count = min(self.normalization_samples, len(raw))
+            positions = np.linspace(0, len(raw) - 1, count, dtype=int)
+            self.transform_factory.fit_normalization(
+                raw.load_image(int(position)).convert("L") for position in positions
+            )
 
         for name in self.assignment.partitions:
             frame = self.partition_frame(name)
@@ -346,6 +455,7 @@ class OlivesDataModule:
                 transform=self.transform_factory.build(train=(name == "train")),
                 reader=self.reader,
                 return_image=self.return_image,
+                image_mode=self.image_mode,
             )
             LOGGER.info("partition '%s': %d rows, %d patients", name, len(frame), frame[self.group_key].nunique())
         return self
@@ -359,20 +469,44 @@ class OlivesDataModule:
         if name not in self.datasets:
             raise KeyError(f"partition '{name}' not built; call setup() first")
         do_shuffle = (name == "train") if shuffle is None else shuffle
+        group_sampler = None
+        if name == "train" and self.sampler != "shuffle" and shuffle is not False:
+            dataset = self.datasets[name]
+            column = self.group_key if self.sampler == "patient" else "visit_uid"
+            if column not in dataset.frame.columns:
+                raise KeyError(f"{self.sampler} sampling requires column {column!r}")
+            group_sampler = GroupBalancedSampler(
+                dataset.frame[column].to_numpy(),
+                targets=dataset.targets,
+                num_samples=self.samples_per_epoch,
+                rare_positive_power=self.rare_positive_sampling_power,
+                seed=seed,
+            )
+            do_shuffle = False
         return DataLoader(
             self.datasets[name],
             batch_size=self.batch_size,
             shuffle=do_shuffle,
+            sampler=group_sampler,
             num_workers=self.num_workers,
             pin_memory=True,
             drop_last=False,
             worker_init_fn=SeedManager(seed).worker_init_fn,
         )
 
-    def pos_weight(self, cap: float = 20.0) -> np.ndarray:
+    def pos_weight(self, cap: float = 20.0, unit: str = "scan") -> np.ndarray:
         """Class weights computed from the training partition only."""
         from olives_biomarkers.data.preprocessing import PosWeightCalculator
 
         if "train" not in self.datasets:
             raise KeyError("call setup() first")
-        return PosWeightCalculator(cap).compute(self.datasets["train"].targets)
+        dataset = self.datasets["train"]
+        targets = dataset.targets
+        if unit != "scan":
+            column = self.group_key if unit == "patient" else "visit_uid"
+            if column not in dataset.frame.columns:
+                raise KeyError(f"{unit} class weights require column {column!r}")
+            target_frame = pd.DataFrame(targets, columns=self.label_columns)
+            target_frame["_group"] = dataset.frame[column].to_numpy()
+            targets = target_frame.groupby("_group", sort=False)[self.label_columns].mean().to_numpy()
+        return PosWeightCalculator(cap).compute(targets)

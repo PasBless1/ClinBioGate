@@ -1,0 +1,21 @@
+# Experiment 6: asymmetric loss as an alternative to weighted BCE.
+#
+# Five labels sit below 1% prevalence. Weighted BCE up-weights their positives,
+# but the loss is still dominated by the sheer number of easy negatives. ASL
+# down-weights confidently-correct negatives much harder than positives, and
+# clips very-low-probability negatives out of the gradient entirely.
+#
+# This is an ABLATION, not an assumed improvement. ASL discards the pos_weight
+# correction (applying both would double-count), so it must be compared against
+# the BCE reference on the same split and seeds before either is adopted.
+defaults: configs/oct_improved.yaml
+
+experiment:
+  name: oct_improved_asl
+  description: "Model B+ with asymmetric loss instead of weighted BCE"
+
+training:
+  loss: asl
+  asl_gamma_negative: 4.0
+  asl_gamma_positive: 1.0
+  asl_clip: 0.05

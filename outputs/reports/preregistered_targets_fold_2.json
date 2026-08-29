@@ -1,0 +1,207 @@
+{
+  "labels": [
+    "ir_hemorrhages",
+    "ez_disruption"
+  ],
+  "rationale": "within-eye |r| with cst significant at alpha=0.01 over at least 10 eyes, and OCT AUPRC below 0.7",
+  "min_eyes": 10,
+  "alpha": 0.01,
+  "fit_patients": [
+    57,
+    58,
+    60,
+    62,
+    64,
+    66,
+    68,
+    69,
+    71,
+    72,
+    73,
+    74,
+    75,
+    79,
+    81,
+    82,
+    83,
+    84,
+    85,
+    88,
+    89,
+    91,
+    93,
+    94,
+    201,
+    203,
+    206,
+    209,
+    211,
+    213,
+    216,
+    217,
+    218,
+    219,
+    220,
+    221,
+    224,
+    229,
+    230,
+    232,
+    239,
+    240,
+    242,
+    243,
+    247,
+    248,
+    251,
+    252,
+    255,
+    256
+  ],
+  "table": [
+    {
+      "label": "ir_hemorrhages",
+      "eyes_with_change": 20,
+      "visits": 40,
+      "r_bcva": -0.4255758018010523,
+      "p_bcva": 0.006186185295901129,
+      "r_cst": 0.5375108190072004,
+      "p_cst": 0.0003480587353703625
+    },
+    {
+      "label": "pavf",
+      "eyes_with_change": 15,
+      "visits": 30,
+      "r_bcva": -0.29193257731475847,
+      "p_bcva": 0.11749901798278406,
+      "r_cst": 0.143175392137226,
+      "p_cst": 0.4503789779675707
+    },
+    {
+      "label": "srf",
+      "eyes_with_change": 15,
+      "visits": 30,
+      "r_bcva": -0.6269864404104843,
+      "p_bcva": 0.00020921862808750337,
+      "r_cst": 0.8837400858471731,
+      "p_cst": 9.783592342561665e-11
+    },
+    {
+      "label": "drt_me",
+      "eyes_with_change": 14,
+      "visits": 28,
+      "r_bcva": -0.5567112005113769,
+      "p_bcva": 0.002092040798238603,
+      "r_cst": 0.7798474812323019,
+      "p_cst": 9.980271319583088e-07
+    },
+    {
+      "label": "preretinal_tissue",
+      "eyes_with_change": 13,
+      "visits": 26,
+      "r_bcva": 0.20421871282803178,
+      "p_bcva": 0.3169720339589034,
+      "r_cst": 0.375155246962552,
+      "p_cst": 0.0589610378649989
+    },
+    {
+      "label": "vitreous_debris",
+      "eyes_with_change": 12,
+      "visits": 24,
+      "r_bcva": -0.23084778702148126,
+      "p_bcva": 0.2777937827789141,
+      "r_cst": 0.2063968930468002,
+      "p_cst": 0.3332297929792296
+    },
+    {
+      "label": "ez_disruption",
+      "eyes_with_change": 11,
+      "visits": 22,
+      "r_bcva": 0.6395789393362942,
+      "p_bcva": 0.0013501487605266584,
+      "r_cst": -0.7726894431407894,
+      "p_cst": 2.5004238826424792e-05
+    },
+    {
+      "label": "atrophy_thinning",
+      "eyes_with_change": 8,
+      "visits": 16,
+      "r_bcva": 0.7457344840582187,
+      "p_bcva": 0.0009114194265986619,
+      "r_cst": -0.5803832730071792,
+      "p_cst": 0.01841896820455882
+    },
+    {
+      "label": "shrm",
+      "eyes_with_change": 8,
+      "visits": 16,
+      "r_bcva": 0.27857624827139643,
+      "p_bcva": 0.2961244502396843,
+      "r_cst": 0.109509126456825,
+      "p_cst": 0.6864172498377614
+    },
+    {
+      "label": "irf",
+      "eyes_with_change": 7,
+      "visits": 14,
+      "r_bcva": -0.6184873194696445,
+      "p_bcva": 0.01838379565736359,
+      "r_cst": 0.6221584734470897,
+      "p_cst": 0.017508022508840305
+    },
+    {
+      "label": "favf",
+      "eyes_with_change": 7,
+      "visits": 14,
+      "r_bcva": -0.18697325665779652,
+      "p_bcva": 0.5221412694591315,
+      "r_cst": -0.2854350543234637,
+      "p_cst": 0.32256012349506014
+    },
+    {
+      "label": "rpe_disruption",
+      "eyes_with_change": 4,
+      "visits": 8,
+      "r_bcva": -0.0724206824377901,
+      "p_bcva": 0.8646852593308805,
+      "r_cst": 0.2506850758275825,
+      "p_cst": 0.5492864817101916
+    },
+    {
+      "label": "dril",
+      "eyes_with_change": 3,
+      "visits": 6,
+      "r_bcva": -0.599144689515278,
+      "p_bcva": 0.208821756152902,
+      "r_cst": 0.7047960237874337,
+      "p_cst": 0.11785524889768716
+    },
+    {
+      "label": "vmt",
+      "eyes_with_change": 2,
+      "visits": 4,
+      "r_bcva": -0.29639921487245285,
+      "p_bcva": 0.7036007851275472,
+      "r_cst": 0.6773720478781837,
+      "p_cst": 0.3226279521218163
+    },
+    {
+      "label": "irhrf",
+      "eyes_with_change": 0,
+      "visits": 0,
+      "r_bcva": null,
+      "p_bcva": null,
+      "r_cst": null,
+      "p_cst": null
+    },
+    {
+      "label": "ped_serous",
+      "eyes_with_change": 0,
+      "visits": 0,
+      "r_bcva": null,
+      "p_bcva": null,
+      "r_cst": null,
+      "p_cst": null
+    }
+  ]
+}

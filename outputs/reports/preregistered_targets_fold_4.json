@@ -1,0 +1,207 @@
+{
+  "labels": [
+    "ir_hemorrhages",
+    "ez_disruption"
+  ],
+  "rationale": "within-eye |r| with cst significant at alpha=0.01 over at least 10 eyes, and OCT AUPRC below 0.7",
+  "min_eyes": 10,
+  "alpha": 0.01,
+  "fit_patients": [
+    58,
+    59,
+    60,
+    61,
+    63,
+    65,
+    69,
+    70,
+    72,
+    75,
+    77,
+    78,
+    79,
+    81,
+    83,
+    84,
+    86,
+    88,
+    90,
+    91,
+    92,
+    94,
+    96,
+    203,
+    207,
+    216,
+    217,
+    219,
+    220,
+    224,
+    225,
+    226,
+    228,
+    229,
+    230,
+    231,
+    235,
+    236,
+    237,
+    240,
+    241,
+    242,
+    243,
+    245,
+    248,
+    249,
+    251,
+    253,
+    254,
+    255
+  ],
+  "table": [
+    {
+      "label": "ir_hemorrhages",
+      "eyes_with_change": 22,
+      "visits": 44,
+      "r_bcva": -0.34812904694120167,
+      "p_bcva": 0.020574173352203805,
+      "r_cst": 0.5213073217678665,
+      "p_cst": 0.00028509198873475586
+    },
+    {
+      "label": "drt_me",
+      "eyes_with_change": 18,
+      "visits": 36,
+      "r_bcva": -0.352410486538666,
+      "p_bcva": 0.03503123926032179,
+      "r_cst": 0.6889528472284175,
+      "p_cst": 3.387361459294871e-06
+    },
+    {
+      "label": "srf",
+      "eyes_with_change": 14,
+      "visits": 28,
+      "r_bcva": -0.6564188177133453,
+      "p_bcva": 0.00014861897870747245,
+      "r_cst": 0.8432905358172683,
+      "p_cst": 1.766674217073764e-08
+    },
+    {
+      "label": "ez_disruption",
+      "eyes_with_change": 13,
+      "visits": 26,
+      "r_bcva": 0.6609417090365036,
+      "p_bcva": 0.00023724673278692731,
+      "r_cst": -0.7545992359519336,
+      "p_cst": 8.440380273264235e-06
+    },
+    {
+      "label": "vitreous_debris",
+      "eyes_with_change": 11,
+      "visits": 22,
+      "r_bcva": -0.24405148745018077,
+      "p_bcva": 0.27371813089869124,
+      "r_cst": 0.32803088468209024,
+      "p_cst": 0.13612219949461438
+    },
+    {
+      "label": "irf",
+      "eyes_with_change": 9,
+      "visits": 18,
+      "r_bcva": -0.73334434252601,
+      "p_bcva": 0.0005340567184191914,
+      "r_cst": 0.503508702810063,
+      "p_cst": 0.0331519895124835
+    },
+    {
+      "label": "atrophy_thinning",
+      "eyes_with_change": 9,
+      "visits": 18,
+      "r_bcva": 0.24550017943353258,
+      "p_bcva": 0.3261339824259203,
+      "r_cst": -0.4950344183621632,
+      "p_cst": 0.03673107344345313
+    },
+    {
+      "label": "preretinal_tissue",
+      "eyes_with_change": 8,
+      "visits": 16,
+      "r_bcva": 0.24885056862419896,
+      "p_bcva": 0.3526842657626186,
+      "r_cst": 0.3172585669877095,
+      "p_cst": 0.23117580649756356
+    },
+    {
+      "label": "shrm",
+      "eyes_with_change": 7,
+      "visits": 14,
+      "r_bcva": 0.19941002821319742,
+      "p_bcva": 0.49430674374918976,
+      "r_cst": 0.3851559087188578,
+      "p_cst": 0.1738523679101421
+    },
+    {
+      "label": "pavf",
+      "eyes_with_change": 7,
+      "visits": 14,
+      "r_bcva": 0.6934810960180179,
+      "p_bcva": 0.005950397495439175,
+      "r_cst": -0.5700141654970513,
+      "p_cst": 0.03332108550047035
+    },
+    {
+      "label": "favf",
+      "eyes_with_change": 6,
+      "visits": 12,
+      "r_bcva": -0.4783446031074605,
+      "p_bcva": 0.1157040072268513,
+      "r_cst": 0.6173580460182141,
+      "p_cst": 0.0324518858548486
+    },
+    {
+      "label": "vmt",
+      "eyes_with_change": 2,
+      "visits": 4,
+      "r_bcva": 0.9743911956946198,
+      "p_bcva": 0.02560880430538015,
+      "r_cst": -0.8178064193007666,
+      "p_cst": 0.18219358069923342
+    },
+    {
+      "label": "rpe_disruption",
+      "eyes_with_change": 2,
+      "visits": 4,
+      "r_bcva": 0.9877629653290692,
+      "p_bcva": 0.012237034670930846,
+      "r_cst": -0.9994664446696815,
+      "p_cst": 0.0005335553303185137
+    },
+    {
+      "label": "dril",
+      "eyes_with_change": 1,
+      "visits": 2,
+      "r_bcva": null,
+      "p_bcva": null,
+      "r_cst": null,
+      "p_cst": null
+    },
+    {
+      "label": "irhrf",
+      "eyes_with_change": 0,
+      "visits": 0,
+      "r_bcva": null,
+      "p_bcva": null,
+      "r_cst": null,
+      "p_cst": null
+    },
+    {
+      "label": "ped_serous",
+      "eyes_with_change": 0,
+      "visits": 0,
+      "r_bcva": null,
+      "p_bcva": null,
+      "r_cst": null,
+      "p_cst": null
+    }
+  ]
+}

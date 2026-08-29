@@ -1,0 +1,14 @@
+# Control C2: permute clinical values among a patient's own visits.
+#
+# Patient identity, the marginal distribution and the visit fingerprint all
+# survive; only the alignment between a visit's clinical values and its biomarkers
+# is destroyed. If the fusion arm's advantage survives this, it was a fingerprint
+# effect and not a clinical one.
+defaults: configs/fusion_longitudinal.yaml
+
+experiment:
+  name: control_within_shuffle
+  description: "CONTROL - clinical values shuffled within each patient"
+
+data:
+  clinical_perturbation: within_patient_shuffle

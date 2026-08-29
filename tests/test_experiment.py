@@ -217,3 +217,64 @@ class TestRunResultRoundTrip:
         (tmp_path / "complete" / "run_metadata.json").write_text("{}", encoding="utf-8")
         found = RunResult.discover(tmp_path)
         assert [p.name for p in found] == ["complete"]
+
+
+class TestPretrainingPoolGuard:
+    """Self-supervised pretraining must not see held-out patients.
+
+    "Unlabelled" is not the same as "safe": pretraining on a test patient's scans
+    teaches the encoder that patient's anatomy even without their labels.
+    """
+
+    def test_pool_contains_only_training_patients(self, manifest) -> None:
+        from olives_biomarkers.data.splits import PatientGroupedSplitter
+        from olives_biomarkers.pipeline import OlivesPipeline
+
+        frame = manifest.modelling_frame(policy="keep_first", labelled_only=True)
+        assignment = PatientGroupedSplitter(seed=42).split(frame)
+
+        pipeline = OlivesPipeline.__new__(OlivesPipeline)  # no data root needed
+        pipeline.config = _minimal_config()
+        pipeline.get_manifest = lambda *a, **k: manifest  # type: ignore[assignment]
+
+        pool = OlivesPipeline.pretraining_frame(pipeline, assignment, manifest=manifest)
+        assert set(pool["patient_id"]) <= set(assignment.train)
+        for held_out in (assignment.val, assignment.test, assignment.calibration):
+            assert not set(pool["patient_id"]) & set(held_out)
+
+    def test_pool_includes_unlabelled_scans(self, manifest) -> None:
+        from olives_biomarkers.data.splits import PatientGroupedSplitter
+        from olives_biomarkers.pipeline import OlivesPipeline
+
+        frame = manifest.modelling_frame(policy="keep_first", labelled_only=True)
+        assignment = PatientGroupedSplitter(seed=42).split(frame)
+
+        pipeline = OlivesPipeline.__new__(OlivesPipeline)
+        pipeline.config = _minimal_config()
+        pipeline.get_manifest = lambda *a, **k: manifest  # type: ignore[assignment]
+
+        pool = OlivesPipeline.pretraining_frame(pipeline, assignment, manifest=manifest)
+        labelled_only = frame[frame["patient_id"].isin(assignment.train)]
+        assert len(pool) > len(labelled_only), "pool should add the unlabelled scans"
+
+    def test_unknown_partition_is_rejected(self, manifest) -> None:
+        from olives_biomarkers.data.splits import PatientGroupedSplitter
+        from olives_biomarkers.pipeline import OlivesPipeline
+
+        frame = manifest.modelling_frame(policy="keep_first", labelled_only=True)
+        assignment = PatientGroupedSplitter(seed=42).split(frame)
+
+        pipeline = OlivesPipeline.__new__(OlivesPipeline)
+        pipeline.config = _minimal_config()
+        pipeline.get_manifest = lambda *a, **k: manifest  # type: ignore[assignment]
+
+        with pytest.raises(KeyError, match="not in this split"):
+            OlivesPipeline.pretraining_frame(
+                pipeline, assignment, manifest=manifest, include_partitions=("nope",)
+            )
+
+
+def _minimal_config():
+    from olives_biomarkers.config import ExperimentConfig
+
+    return ExperimentConfig()

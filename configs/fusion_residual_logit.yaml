@@ -1,0 +1,34 @@
+# Experiment 7: clinical evidence as a bounded per-biomarker logit correction.
+#
+#     logits = oct_logits + beta * clinical_logits
+#
+# The A100 gate learned a mean scale of 1.897 out of 2 and amplified 97.78% of
+# channels, so it acted as near-global gain rather than selective modulation, and
+# it lost to the OCT baseline. This design gives clinical features the narrowest
+# channel that still expresses the hypothesis.
+#
+# beta starts at exactly zero, so training begins as the OCT baseline and the
+# clinical branch has to earn every unit of influence against validation. Because
+# beta is per-label, the fitted values are directly interpretable: CST should be
+# allowed to inform DRT/ME, IRF and SRF and stay near zero for the vitreous-face
+# labels. Report those coefficients regardless of whether the macro metric moves.
+defaults: configs/oct_improved.yaml
+
+experiment:
+  name: fusion_residual_logit
+  description: "Bounded per-biomarker clinical logit correction over the OCT baseline"
+
+model:
+  name: residual_logit_fusion
+  clinical_features: [bcva, cst]
+  use_missingness_indicators: true
+  clinical_embedding_dim: 32
+  clinical_hidden_dims: [64, 32]
+  # Effective coefficient is max_scale * tanh(beta), so a single label's clinical
+  # term cannot swamp the image evidence.
+  clinical_residual_max_scale: 1.0
+  clinical_residual_per_label: true
+
+training:
+  # Small L1 on beta so clinical terms must earn their place; set to 0 to disable.
+  model_regularization_weight: 0.0

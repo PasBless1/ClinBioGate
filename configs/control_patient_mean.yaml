@@ -1,0 +1,13 @@
+# Control C1: replace each visit's clinical values with the patient's mean.
+#
+# Removes the within-visit contrast while keeping patient-level severity. If the
+# fusion arm's advantage survives this, the advantage was never longitudinal and
+# the within-eye story in fusion_longitudinal.yaml is wrong.
+defaults: configs/fusion_longitudinal.yaml
+
+experiment:
+  name: control_patient_mean
+  description: "CONTROL - clinical values collapsed to the patient mean"
+
+data:
+  clinical_perturbation: patient_mean

@@ -7,7 +7,15 @@ data/manifests/splits/
 !data/manifests/.gitkeep
 
 # ---- Experiment outputs ----
-outputs/
+outputs/*
+# ...except the pre-registered target labels. A pre-registration only means
+# something if it is in version control BEFORE the results it constrains, so
+# these are deliberately tracked. Git cannot re-include a path inside an
+# excluded directory, hence the directory-by-directory unwind.
+!outputs/reports/
+outputs/reports/*
+!outputs/reports/preregistered_targets_*.json
+!outputs/reports/within_eye_association_*.csv
 mlruns/
 wandb/
 *.ckpt

@@ -44,14 +44,54 @@ class DataConfig:
     group_key: str = "patient_id"
     image_size: tuple[int, int] = (224, 224)
     num_workers: int = 4
+    image_mode: str = "repeat"  # repeat | grayscale | adjacent
+    crop_retina: bool = False
+    crop_threshold: float = 0.04
+    crop_padding: float = 0.08
+    preserve_aspect_ratio: bool = False
+    normalization: str = "imagenet"  # imagenet | olives | train_fold
+    normalization_samples: int = 512
+    horizontal_flip: bool = False
+    # Within-eye clinical context. Absolute BCVA/CST are largely redundant with
+    # the B-scan; the change from the eye's own baseline visit is not.
+    longitudinal_clinical: bool = False
+    # Control ladder separating clinical signal from visit identity. Any value
+    # other than "none" marks the run as a control, not a model result.
+    clinical_perturbation: str = "none"
+    clinical_perturbation_seed: int = 42
+    clinical_bin_cst: float = 25.0
+    clinical_bin_bcva: float = 5.0
     colab: ColabConfig = field(default_factory=ColabConfig)
+
+    PERTURBATIONS = (
+        "none",
+        "patient_mean",
+        "within_patient_shuffle",
+        "across_patient_shuffle",
+        "quantise",
+    )
 
     def __post_init__(self) -> None:
         if self.target_set not in {"six", "sixteen"}:
             raise ValueError(f"target_set must be 'six' or 'sixteen', got {self.target_set!r}")
         if self.config_name not in {"disease_classification", "biomarker_detection"}:
             raise ValueError(f"unknown config_name {self.config_name!r}")
+        if self.clinical_perturbation not in self.PERTURBATIONS:
+            raise ValueError(
+                f"unknown clinical_perturbation {self.clinical_perturbation!r}; "
+                f"choose from {self.PERTURBATIONS}"
+            )
         self.image_size = tuple(self.image_size)  # type: ignore[assignment]
+
+    @property
+    def clinical_bins(self) -> dict[str, float]:
+        """Bin widths used by the ``quantise`` control, in clinical units."""
+        return {"cst": self.clinical_bin_cst, "bcva": self.clinical_bin_bcva}
+
+    @property
+    def is_control_arm(self) -> bool:
+        """Whether this configuration perturbs the clinical inputs."""
+        return self.clinical_perturbation != "none"
 
 
 @dataclass
@@ -109,6 +149,13 @@ class ModelConfig:
     clinical_embedding_dim: int = 32
     clinical_hidden_dims: list[int] = field(default_factory=lambda: [64, 32])
     dropout: float = 0.30
+    in_channels: int = 3
+    pretrained_checkpoint: str | None = None
+    checkpoint_key: str = "model"
+    film_max_scale: float = 0.25
+    film_max_shift: float = 0.25
+    clinical_residual_max_scale: float = 1.0
+    clinical_residual_per_label: bool = True
     gate_residual: bool = True
     gate_bias_init: float | None = None
     gate_scale_alpha: float = 1.0
@@ -121,6 +168,8 @@ class TrainingConfig:
     epochs: int = 50
     batch_size: int = 32
     learning_rate: float = 1e-4
+    backbone_learning_rate: float | None = None
+    head_learning_rate: float | None = None
     weight_decay: float = 1e-4
     early_stopping_patience: int = 8
     monitor: str = "val_macro_auprc"
@@ -129,6 +178,21 @@ class TrainingConfig:
     pos_weight: str | None = "from_train_fold"
     pos_weight_cap: float = 20.0
     loss: str = "bce"
+    asl_gamma_negative: float = 4.0
+    asl_gamma_positive: float = 1.0
+    asl_clip: float = 0.05
+    exclusive_label_pairs: list[list[str]] = field(default_factory=list)
+    exclusivity_penalty: float = 0.0
+    model_regularization_weight: float = 0.0
+    pos_weight_unit: str = "scan"  # scan | patient | visit
+    sampler: str = "shuffle"  # shuffle | patient | visit
+    samples_per_epoch: int | None = None
+    rare_positive_sampling_power: float = 0.0
+    freeze_backbone_epochs: int = 0
+    gradual_unfreeze_epochs: int = 0
+    scheduler: str = "none"  # none | cosine
+    warmup_epochs: int = 0
+    min_learning_rate_ratio: float = 0.01
     grad_clip_norm: float | None = None
 
 
@@ -146,6 +210,8 @@ class EvaluationConfig:
     bootstrap_iterations: int = 1000
     threshold_strategy: str = "per_label_validation_f1"
     coverage_levels: list[float] = field(default_factory=lambda: [1.0, 0.9, 0.8, 0.7])
+    tta_horizontal_flip: bool = False
+    ensemble_space: str = "logit"  # logit | probability
 
 
 @dataclass

@@ -1,0 +1,26 @@
+# Experiment 7 (alternative): bounded FiLM modulation.
+#
+#     scale = 1 + 0.25 * tanh(gamma)
+#     modulated = scale * oct_features + shift
+#
+# Keeps feature-space modulation but caps it at +/-25% instead of letting the
+# gate approach a 2x global amplification. Both the scale and shift projections
+# are zero-initialised, so this also starts as the OCT baseline exactly.
+#
+# Run this against configs/fusion_residual_logit.yaml to separate two questions:
+# whether clinical features help at all, and whether they should act on features
+# or on logits.
+defaults: configs/oct_improved.yaml
+
+experiment:
+  name: fusion_film
+  description: "Bounded FiLM clinical modulation of OCT features"
+
+model:
+  name: bounded_film_fusion
+  clinical_features: [bcva, cst]
+  use_missingness_indicators: true
+  clinical_embedding_dim: 32
+  clinical_hidden_dims: [64, 32]
+  film_max_scale: 0.25
+  film_max_shift: 0.25

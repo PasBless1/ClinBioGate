@@ -137,6 +137,55 @@ class TestVisitInferencer:
             VisitInferencer().assign(pd.DataFrame({"bcva": [1.0]}))
 
 
+class TestVisitUidWithMissingIdentifiers:
+    """Building a visit id must not depend on the installed pandas version.
+
+    Regression guard: ``eye_id`` is float64 and NaN for the one patient with no
+    clinical measurements. ``astype("Int64")`` on that column raises
+    ``IntCastingNaNError`` on older pandas but succeeds on 2.2, so the manifest
+    built locally and failed on Colab against identical data.
+    """
+
+    @pytest.mark.parametrize(
+        "series,expected",
+        [
+            (pd.Series([58.0, np.nan, 60.0]), ["58", "<NA>", "60"]),
+            (pd.Series([1, 2], dtype="int64"), ["1", "2"]),
+            (pd.Series([1, pd.NA], dtype="Int64"), ["1", "<NA>"]),
+            (pd.Series([np.nan, np.nan]), ["<NA>", "<NA>"]),
+        ],
+    )
+    def test_id_component_renders_every_dtype(self, series, expected) -> None:
+        assert VisitInferencer._id_component(series).tolist() == expected
+
+    def test_assign_survives_a_missing_eye_id(self) -> None:
+        frame = pd.DataFrame(
+            {
+                "patient_id": [79, 79, 79, 79],
+                "eye_id": [np.nan] * 4,
+                "bcva": [np.nan, np.nan, 70.0, 70.0],
+                "cst": [np.nan, np.nan, 250.0, 250.0],
+                "scan_number": [1, 2, 1, 2],
+            }
+        )
+        out = VisitInferencer().assign(frame)
+        assert list(out["visit_uid"]) == ["79_E<NA>_V0"] * 2 + ["79_E<NA>_V1"] * 2
+
+    def test_missing_clinical_pair_does_not_open_a_new_visit(self) -> None:
+        """NaN must compare equal to NaN, or every unmeasured scan starts a visit."""
+        frame = pd.DataFrame(
+            {
+                "patient_id": [79] * 4,
+                "eye_id": [1.0] * 4,
+                "bcva": [np.nan] * 4,
+                "cst": [np.nan] * 4,
+                "scan_number": [1, 2, 3, 4],
+            }
+        )
+        out = VisitInferencer().assign(frame)
+        assert out["visit_index"].nunique() == 1
+
+
 class TestClinicalPreprocessor:
     """Fit-on-train-only enforcement."""
 

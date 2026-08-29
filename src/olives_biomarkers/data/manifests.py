@@ -180,14 +180,28 @@ class VisitInferencer:
         out["visit_index"] = visit_index
         out["is_adjacent_duplicate"] = adjacent_dup
         out["visit_uid"] = (
-            out["patient_id"].astype("Int64").astype(str)
+            self._id_component(out["patient_id"])
             + "_E"
-            + out["eye_id"].astype("Int64").astype(str)
+            + self._id_component(out["eye_id"])
             + "_V"
             + out["visit_index"].astype(str)
         )
         out["visit_size"] = out.groupby("visit_uid")["visit_uid"].transform("size").astype(int)
         return out
+
+    @staticmethod
+    def _id_component(series: pd.Series) -> pd.Series:
+        """Render an id column as text without going through an integer cast.
+
+        ``eye_id`` arrives as float64 and is NaN for the one patient whose
+        clinical values are missing. ``astype("Int64")`` on such a column raises
+        ``IntCastingNaNError`` on older pandas but succeeds on 2.2, so the
+        manifest built locally and failed on Colab against the same data.
+        Formatting directly removes the version dependency, and ``<NA>`` is kept
+        as the rendering for missing ids so previously built manifests keep
+        matching ``visit_uid`` values.
+        """
+        return series.map(lambda value: "<NA>" if pd.isna(value) else str(int(value)))
 
     @staticmethod
     def _same_key(left: tuple[Any, Any], right: tuple[Any, Any]) -> bool:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -57,6 +58,22 @@ class EarlyStopping:
             )
         return False
 
+    def state_dict(self) -> dict[str, Any]:
+        """Serializable state needed to continue patience counting after a restart."""
+        return {
+            "best": self.best,
+            "best_epoch": self.best_epoch,
+            "counter": self.counter,
+            "should_stop": self.should_stop,
+        }
+
+    def load_state_dict(self, state: dict[str, Any]) -> None:
+        """Restore a state produced by :meth:`state_dict`."""
+        self.best = state.get("best")
+        self.best_epoch = int(state.get("best_epoch", -1))
+        self.counter = int(state.get("counter", 0))
+        self.should_stop = bool(state.get("should_stop", False))
+
 
 class CheckpointManager:
     """Saves best and last checkpoints, plus everything needed to resume."""
@@ -85,10 +102,16 @@ class CheckpointManager:
         is_best: bool = False,
         extra: dict[str, Any] | None = None,
     ) -> Path:
-        """Write a checkpoint; also writes the best copy when ``is_best``."""
+        """Atomically write ``last`` and, on improvement, ``best``.
+
+        The temporary file lives beside the destination, so a Colab disconnect
+        cannot leave a half-written checkpoint masquerading as a valid one on
+        Google Drive.
+        """
         import torch
 
         payload = {
+            "checkpoint_version": 2,
             "epoch": epoch,
             "model_state_dict": model.state_dict(),
             "metrics": metrics or {},
@@ -99,11 +122,36 @@ class CheckpointManager:
         if extra:
             payload.update(extra)
 
-        torch.save(payload, self.last_path)
+        self._atomic_torch_save(payload, self.last_path)
         if is_best:
-            torch.save(payload, self.best_path)
+            self._atomic_copy(self.last_path, self.best_path)
             LOGGER.info("new best checkpoint at epoch %d -> %s", epoch, self.best_path.name)
         return self.last_path
+
+    @staticmethod
+    def _temporary_path(target: Path) -> Path:
+        """A same-directory temporary path suitable for an atomic replacement."""
+        return target.with_name(f".{target.name}.tmp")
+
+    def _atomic_torch_save(self, payload: dict[str, Any], target: Path) -> None:
+        """Serialize once and replace the destination only after success."""
+        import torch
+
+        temporary = self._temporary_path(target)
+        try:
+            torch.save(payload, temporary)
+            temporary.replace(target)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    def _atomic_copy(self, source: Path, target: Path) -> None:
+        """Copy a completed checkpoint without serializing the model twice."""
+        temporary = self._temporary_path(target)
+        try:
+            shutil.copy2(source, temporary)
+            temporary.replace(target)
+        finally:
+            temporary.unlink(missing_ok=True)
 
     def load(self, model: Any, path: str | Path | None = None, map_location: str = "cpu") -> dict[str, Any]:
         """Restore weights into ``model`` and return the checkpoint payload."""
@@ -116,6 +164,25 @@ class CheckpointManager:
         model.load_state_dict(payload["model_state_dict"])
         LOGGER.info("loaded checkpoint %s (epoch %s)", target.name, payload.get("epoch"))
         return payload
+
+    def export_model(
+        self,
+        model: Any,
+        path: str | Path,
+        metadata: dict[str, Any] | None = None,
+    ) -> Path:
+        """Save an inference-ready best-model bundle separate from resume state."""
+        target = Path(path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "format_version": 1,
+            "run_id": self.run_id,
+            "model_state_dict": model.state_dict(),
+            "metadata": metadata or {},
+        }
+        self._atomic_torch_save(payload, target)
+        LOGGER.info("exported model bundle -> %s", target)
+        return target
 
 
 @dataclass

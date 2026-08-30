@@ -7,6 +7,7 @@ trains the clinical-only baseline and the gated fusion model without branching.
 
 from __future__ import annotations
 
+import random
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -107,6 +108,83 @@ class Trainer:
         self.history = MetricHistory()
         self.metrics = MultiLabelMetrics(label_names=label_names)
 
+    def _training_state(self) -> dict[str, Any]:
+        """State beyond weights/optimizer required for an exact epoch resume."""
+        rng_state: dict[str, Any] = {
+            "python": random.getstate(),
+            "numpy": np.random.get_state(),
+            "torch_cpu": torch.get_rng_state(),
+        }
+        if torch.cuda.is_available():
+            rng_state["torch_cuda"] = torch.cuda.get_rng_state_all()
+        return {
+            "scaler_state_dict": self.scaler.state_dict(),
+            "early_stopping_state": self.early_stopping.state_dict(),
+            "scheduler_state": (
+                {"last_factor": self.scheduler.last_factor}
+                if self.scheduler is not None
+                else None
+            ),
+            "history_records": list(self.history.records),
+            "rng_state": rng_state,
+        }
+
+    def _restore_training_state(self, payload: dict[str, Any]) -> int:
+        """Restore optimizer, AMP, stopping, history and RNG; return next epoch."""
+        if "optimizer_state_dict" in payload:
+            self.optimizer.load_state_dict(payload["optimizer_state_dict"])
+        if payload.get("scaler_state_dict"):
+            self.scaler.load_state_dict(payload["scaler_state_dict"])
+        if payload.get("early_stopping_state"):
+            self.early_stopping.load_state_dict(payload["early_stopping_state"])
+        elif self.checkpoints.best_path.exists():
+            # Compatibility with v1 checkpoints, which did not store the
+            # early-stopping counter. At least preserve the best metric.
+            best = torch.load(
+                self.checkpoints.best_path,
+                map_location="cpu",
+                weights_only=False,
+            )
+            best_value = best.get("metrics", {}).get(self.config.monitor)
+            if best_value is not None:
+                self.early_stopping.best = float(best_value)
+                self.early_stopping.best_epoch = int(best.get("epoch", -1))
+        self.history.records = list(payload.get("history_records", []))
+        if self.scheduler is not None and payload.get("scheduler_state"):
+            self.scheduler.last_factor = float(
+                payload["scheduler_state"].get("last_factor", 1.0)
+            )
+
+        rng_state = payload.get("rng_state", {})
+        if rng_state.get("python") is not None:
+            random.setstate(rng_state["python"])
+        if rng_state.get("numpy") is not None:
+            np.random.set_state(rng_state["numpy"])
+        if rng_state.get("torch_cpu") is not None:
+            torch.set_rng_state(rng_state["torch_cpu"].cpu())
+        if (
+            self.device == "cuda"
+            and torch.cuda.is_available()
+            and rng_state.get("torch_cuda") is not None
+        ):
+            torch.cuda.set_rng_state_all(rng_state["torch_cuda"])
+
+        self._trainability_mode = None
+        last_epoch = int(payload.get("epoch", 0))
+        LOGGER.info(
+            "resuming %s after epoch %d (%d history records)",
+            self.run_id,
+            last_epoch,
+            len(self.history.records),
+        )
+        return last_epoch + 1
+
+    def resume_from_last(self, path: str | Path | None = None) -> int:
+        """Load a full training checkpoint and return the next 1-indexed epoch."""
+        target = Path(path) if path is not None else self.checkpoints.last_path
+        payload = self.checkpoints.load(self.model, target, map_location=self.device)
+        return self._restore_training_state(payload)
+
     # ------------------------------------------------------------------
     def _forward(self, batch: dict[str, torch.Tensor]) -> torch.Tensor:
         """Feed only the modalities the model declares it uses."""
@@ -206,13 +284,25 @@ class Trainer:
         """Run one deterministic evaluation pass."""
         return self._run_epoch(loader, train=False)
 
-    def fit(self, train_loader: Any, val_loader: Any, epochs: int | None = None) -> MetricHistory:
-        """Train with early stopping on the monitored validation metric."""
+    def fit(
+        self,
+        train_loader: Any,
+        val_loader: Any,
+        epochs: int | None = None,
+        resume: bool | str | Path = False,
+    ) -> MetricHistory:
+        """Train with early stopping, optionally resuming the latest checkpoint."""
         total_epochs = epochs or self.config.epochs
         monitor = self.config.monitor
+        start_epoch = 1
+        resume_path = Path(resume) if isinstance(resume, (str, Path)) else None
+        if resume_path is not None or (resume and self.checkpoints.last_path.exists()):
+            start_epoch = self.resume_from_last(resume_path)
+
         LOGGER.info(
-            "training %s for up to %d epochs on %s (monitor=%s, mode=%s)",
+            "training %s from epoch %d to %d on %s (monitor=%s, mode=%s)",
             type(self.model).__name__,
+            start_epoch,
             total_epochs,
             self.device,
             monitor,
@@ -228,7 +318,13 @@ class Trainer:
                 self.config.min_learning_rate_ratio,
             )
 
-        for epoch in range(1, total_epochs + 1):
+        if start_epoch > total_epochs or self.early_stopping.should_stop:
+            LOGGER.info(
+                "checkpoint already reached the stopping point; skipping optimisation"
+            )
+            return self.history
+
+        for epoch in range(start_epoch, total_epochs + 1):
             phase = self.fine_tune_schedule.mode_for_epoch(epoch)
             self.apply_trainability(phase)
             learning_rates = (
@@ -270,6 +366,7 @@ class Trainer:
                 epoch=epoch,
                 metrics=record,
                 is_best=is_best,
+                extra=self._training_state(),
             )
             LOGGER.info(
                 "epoch %3d [%s] | train_loss %.4f | val_loss %.4f | %s %.4f%s",
@@ -305,3 +402,11 @@ class Trainer:
     def load_best(self) -> dict[str, Any]:
         """Restore the best checkpoint into the model."""
         return self.checkpoints.load(self.model, map_location=self.device)
+
+    def export_model(
+        self,
+        path: str | Path,
+        metadata: dict[str, Any] | None = None,
+    ) -> Path:
+        """Export the currently loaded weights as a compact inference bundle."""
+        return self.checkpoints.export_model(self.model, path, metadata=metadata)

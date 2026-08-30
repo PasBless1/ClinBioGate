@@ -352,8 +352,62 @@ class ExperimentRunner:
             run_id=run_id,
             label_names=manifest.label_columns,
         )
-        trainer.fit(data.dataloader("train"), data.dataloader("val", shuffle=False))
+
+        completed = run_dir / "run_metadata.json"
+        if training.reuse_completed_run and completed.exists():
+            result = RunResult.load(run_dir)
+            trainer.load_best()
+            model_path = run_dir / "models" / f"{run_id}_model.pt"
+            if not model_path.exists():
+                trainer.export_model(
+                    model_path,
+                    metadata={
+                        "model_config": self.config.to_dict()["model"],
+                        "label_names": manifest.label_columns,
+                        "target_set": self.config.data.target_set,
+                    },
+                )
+            self._trainer = trainer
+            self._data = data
+            self._model = model
+            JsonIO.write(
+                {"status": "complete", "run_id": result.run_id},
+                run_dir / "run_state.json",
+            )
+            LOGGER.info("completed run %s found; skipped training", run_id)
+            return result
+
+        # Persist everything needed to restart before the first expensive epoch.
+        # ``run_metadata.json`` remains the completion marker and is deliberately
+        # written only after predictions and metrics have also been saved.
+        data.preprocessor.save(run_dir / "clinical_preprocessor.json")
+        self.config.save(run_dir / "resolved_config.yaml")
+        JsonIO.write(
+            {
+                "status": "training",
+                "run_id": run_id,
+                "experiment": self.config.experiment.name,
+                "model": self.config.model.name,
+                "seed": seed,
+                "split": assignment.name,
+            },
+            run_dir / "run_state.json",
+        )
+
+        trainer.fit(
+            data.dataloader("train"),
+            data.dataloader("val", shuffle=False),
+            resume=training.resume_from_checkpoint,
+        )
         trainer.load_best()
+        trainer.export_model(
+            run_dir / "models" / f"{run_id}_model.pt",
+            metadata={
+                "model_config": self.config.to_dict()["model"],
+                "label_names": manifest.label_columns,
+                "target_set": self.config.data.target_set,
+            },
+        )
 
         predictions: dict[str, dict[str, np.ndarray]] = {}
         for partition in ("val", "calibration", "test"):
@@ -444,6 +498,10 @@ class ExperimentRunner:
             package_versions=RunMetadata.collect_package_versions(),
             manifest_hash=RunMetadata.hash_file(self.pipeline.manifest_path()),
         ).to_json(run_dir / "run_metadata.json")
+        JsonIO.write(
+            {"status": "complete", "run_id": result.run_id},
+            run_dir / "run_state.json",
+        )
 
     # ------------------------------------------------------------------
     def _require_run(self, attribute: str) -> Any:

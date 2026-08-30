@@ -194,6 +194,8 @@ class TrainingConfig:
     warmup_epochs: int = 0
     min_learning_rate_ratio: float = 0.01
     grad_clip_norm: float | None = None
+    resume_from_checkpoint: bool = True
+    reuse_completed_run: bool = True
 
 
 @dataclass

@@ -55,6 +55,30 @@ clinically associated but mostly amplifying transformation without improving pre
 
 ![Learned gate distribution](assets/readme/03_gate_distribution.png)
 
+![Implemented gated-fusion architecture](assets/readme/07_gated_fusion_architecture.png)
+
+### Single-seed follow-up experiments
+
+The additional Phase 3 runs used the same patient-grouped holdout. The gate ablations tested
+whether missingness indicators or the residual-safe formulation explained the negative result.
+The longitudinal arms used a bounded per-biomarker logit correction driven by within-eye clinical
+change; these are seed-42 exploratory runs, not three-seed estimates.
+
+| Experiment | Seed | Macro F1 | Macro AUROC | Macro AUPRC |
+|---|---:|---:|---:|---:|
+| Gated fusion | 42 | 0.4988 | 0.8528 | 0.5335 |
+| Gated, no missingness indicators | 42 | 0.4574 | 0.8319 | 0.5338 |
+| Gated, raw multiplicative scale | 42 | 0.4779 | 0.8604 | 0.5146 |
+| Longitudinal absolute + within-eye change | 42 | 0.4856 | — | **0.5721** |
+| Within-eye change only | 42 | 0.4643 | — | **0.5616** |
+
+Against the seed-42 OCT reference (macro F1 0.5189, macro AUPRC 0.5476), the longitudinal arm
+gained 0.0245 AUPRC while losing 0.0333 F1; the change-only arm gained 0.0140 AUPRC while losing
+0.0546 F1. This is an encouraging ranking result, but it does **not** establish that clinical
+change improves the model: only one seed was run, the contender checkpoints were not available
+to Phase 5 for a paired patient bootstrap, and the threshold-dependent metric moved in the
+opposite direction. Persistent paired reruns are required before claiming the objective was met.
+
 ### Calibration and selective prediction
 
 Post-hoc analysis used the persistent OCT-only seed-42 run. Temperature scaling reduced mean
@@ -62,9 +86,10 @@ ECE from 0.0720 to 0.0609 and Brier score from 0.0902 to 0.0855 across the 12 la
 positives to interpret. After refitting validation thresholds on the calibrated scale, macro F1
 was 0.5261; ranking metrics remained unchanged, as expected.
 
-MC dropout uncertainty tracked scan error (Spearman rho 0.5274). Referring the most uncertain
-20% of scans increased macro F1 from 0.5261 to 0.5973 and macro AUPRC from 0.5476 to 0.6197.
-This is a retrospective selective-prediction result, not a deployment claim.
+MC dropout uncertainty tracked scan error (Spearman rho 0.5319). Referring the most uncertain
+20% of scans increased macro F1 from 0.5261 to 0.5983 and macro AUPRC from 0.5476 to 0.6183.
+The highest observed macro F1 was 0.5994 at 70% coverage. This is a retrospective
+selective-prediction result, not a deployment claim.
 
 | Calibration | Selective prediction |
 |---|---|
@@ -74,8 +99,8 @@ This is a retrospective selective-prediction result, not a deployment claim.
 
 Patient-level bootstrap intervals for the persistent OCT run were: macro F1 0.5004
 [0.4590, 0.5795], macro AUROC 0.8505 [0.7948, 0.8905], and macro AUPRC 0.5476
-[0.5120, 0.6584]. Only this OCT checkpoint was available in persistent Drive storage, so these
-intervals do not establish a difference between models.
+[0.5120, 0.6584]. At evaluation time, only this OCT checkpoint was available in persistent Drive
+storage, so these intervals do not establish a difference between models.
 
 The attention audit examined 80 IRF and DRT/ME heatmaps from 40 test scans. Twenty maps (25%)
 concentrated suspiciously on borders or background. Grad-CAM therefore provides case-review
@@ -155,6 +180,10 @@ Do not start with a larger backbone or a longer schedule. The evidence points at
 image area, ImageNet-only pretraining, missing inter-slice context, and patient-level
 data scarcity.
 
+The holdout versions of arms I and J have now been completed for seed 42; their exploratory
+results are reported above. The remaining work is the three-seed rerun, paired patient bootstrap,
+control ladder and five-fold confirmation.
+
 ### Within-eye clinical context, and the controls for it
 
 Absolute BCVA and CST at the current visit are largely redundant with the B-scan — CST is a
@@ -192,6 +221,10 @@ not what the fusion arm was using.
 patients only** and names the labels where fusion is predicted to help, before any test data is
 touched. A label qualifies on two independent grounds: an association strong enough to be a
 mechanism, and an OCT baseline low enough to leave room.
+
+For the executed holdout run, the training-only procedure pre-registered `ir_hemorrhages` and
+`ez_disruption`. Across the planned five-fold analysis, only `ir_hemorrhages` qualifies in every
+fold:
 
 | fold | qualifying labels |
 |---|---|
@@ -396,6 +429,26 @@ exporter.export(eda.labelled)       # 9,396 PNGs, 2.3 GB
 
 Upload that folder to Drive and set `data.colab.drive_data_subpath`.
 
+### Persistent checkpoints and model bundles
+
+The Colab training notebooks write runs directly to
+`/content/drive/MyDrive/olives/outputs/runs/colab_gpu`. Every model/seed run keeps:
+
+```text
+<run_id>/
+├── checkpoints/<run_id>_last.pt   # full state, replaced atomically after every epoch
+├── checkpoints/<run_id>_best.pt   # best validation checkpoint
+├── models/<run_id>_model.pt       # best weights + architecture/label metadata
+├── resolved_config.yaml
+├── clinical_preprocessor.json
+└── run_state.json
+```
+
+`training.resume_from_checkpoint: true` restores model weights, AdamW state, AMP scaler,
+early-stopping patience, metric history, schedule position and random-number states from `last`.
+`training.reuse_completed_run: true` loads a finished run without training. Keep the same
+model/split/seed run ID when reconnecting to Colab; Phase 2–4 do this automatically.
+
 ---
 
 ## Testing
@@ -421,17 +474,21 @@ with missing clinical values, and a label confined to one patient. No real data 
 - [x] **Phase 5** — Grad-CAM, attention sanity, bootstrap CIs, report (`05_explainability_and_report.ipynb`)
 - [x] **Improvement round implemented** — crop/320px, 2.5D input, RETFound support,
       balanced sampling, staged fine-tuning, ASL, two bounded fusion designs, seed
-      ensembling. **None of it has been trained yet**; the A100 numbers above are still
-      from the previous round.
+      ensembling. The original-gate ablations and longitudinal bounded-fusion arms have
+      seed-42 results; the crop/320px, 2.5D, RETFound, ASL and ensemble arms remain untrained.
 - [x] **Within-eye clinical context implemented** — longitudinal features, the four-rung control
       ladder, pre-registration of target labels, and paired patient-level difference testing.
-      **Not trained yet.**
+      The longitudinal and delta-only holdout arms are trained for seed 42; controls, repeated
+      seeds, paired bootstrap and five-fold confirmation remain.
+- [x] **Persistent Colab recovery** — atomic best/last checkpoints, full optimiser-state resume,
+      completed-run reuse and exported best-model bundles under Google Drive.
 - [ ] **Phase 6** — self-supervised pretraining *(fundus and volume extensions blocked: not in this mirror)*
 
 The pipeline has been exercised end to end on an NVIDIA A100 at the full 224 px, 50-epoch
 budget across three seeds. The current evidence supports OCT over the clinical-only baseline,
-but not gated fusion over OCT. Final inferential comparison still requires persistent checkpoints
-for every model, paired patient-level bootstrap differences, and five-fold patient-grouped
+but not the original gated fusion over OCT. The single-seed longitudinal AUPRC gains are
+exploratory. Final inferential comparison still requires Drive-backed reruns for every contender,
+paired patient-level bootstrap differences, repeated seeds and five-fold patient-grouped
 cross-validation.
 
 ---
